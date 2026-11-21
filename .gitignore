@@ -1,5 +1,6 @@
 # Secrets
 .env
+.studio.json
 .env.local
 *.pem
 *.key

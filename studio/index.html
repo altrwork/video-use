@@ -71,6 +71,20 @@ kbd{font-family:ui-monospace,Menlo,monospace;font-size:10.5px;background:var(--p
 .row>*{flex:1;min-width:0}
 .insp textarea{min-height:52px;resize:vertical}
 .empty{color:var(--dim);padding:16px 12px}
+/* assets bin */
+.bin{padding:10px 12px 30px}
+.bin .apps{display:flex;flex-wrap:wrap;gap:5px;align-items:center;margin-bottom:8px}
+.bin .apps .chip{background:#3ecf8e18;border-color:#3ecf8e66;color:#bdf3d9}
+.bin h5{margin:12px 0 6px;font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--mute);font-weight:600}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(92px,1fr));gap:6px}
+.tile{background:#111114;border:1px solid var(--line2);border-radius:6px;overflow:hidden;cursor:pointer;display:flex;flex-direction:column}
+.tile.sel{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent)}
+.tile .th{height:64px;display:flex;align-items:center;justify-content:center;background:repeating-conic-gradient(#1b1b1f 0 25%,#232328 0 50%) 0 0/12px 12px;color:var(--mute);font-size:20px}
+.tile .th img,.tile .th video{max-width:100%;max-height:100%;object-fit:contain}
+.tile .nm{font-size:10.5px;padding:3px 5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#cfcfd6}
+.tile.new{animation:flash 2.4s ease-out}
+.brandok{font-size:11px;color:var(--green);border:1px solid #3ecf8e55;border-radius:999px;padding:1px 8px}
+.brandno{font-size:11px;color:var(--mute);border:1px solid var(--line2);border-radius:999px;padding:1px 8px}
 /* center: monitor */
 .center{display:flex;flex-direction:column;min-width:0;min-height:0;background:#0d0d0f}
 .mon-tabs{display:flex;align-items:center;gap:6px;padding:6px 10px;border-bottom:1px solid var(--line)}
@@ -175,6 +189,7 @@ kbd{font-family:ui-monospace,Menlo,monospace;font-size:10.5px;background:var(--p
   <div class="top">
     <div class="brand"><i></i>Video Use Studio</div>
     <div class="proj" id="proj"></div>
+    <span id="brandBadge"></span>
     <div class="save" id="save"></div>
     <div class="spacer"></div>
     <button class="ghost" id="undo" title="Undo (⌘Z)">↶ Undo</button>
@@ -190,9 +205,10 @@ kbd{font-family:ui-monospace,Menlo,monospace;font-size:10.5px;background:var(--p
   </div>
 
   <div class="left">
-    <div class="tabs"><button class="on" data-tab="tx">Transcript</button><button data-tab="insp">Inspector</button></div>
+    <div class="tabs"><button class="on" data-tab="tx">Transcript</button><button data-tab="insp">Inspector</button><button data-tab="bin">Assets</button></div>
     <div class="pane" id="pane-tx"><div class="tx" id="tx"></div></div>
     <div class="pane hidden" id="pane-insp"><div id="insp"></div></div>
+    <div class="pane hidden" id="pane-bin"><div class="bin" id="bin"></div></div>
     <div class="hint">Click a word to seek. Drag across words, then <kbd>⌫</kbd> to cut them. Click a <span style="text-decoration:line-through">struck</span> word to restore it.</div>
   </div>
 
@@ -276,7 +292,8 @@ const S = {
   clips: [], total: 0, cues: [],
   out: 0, playing: false, active: -1,
   pps: 40, history: [], future: [],
-  sel: { clips: new Set(), overlays: new Set(), words: null, range: null, pin: null },
+  sel: { clips: new Set(), overlays: new Set(), words: null, range: null, pin: null, assets: new Set() },
+  bin: [], apps: [], brand: null,
   markIn: null,
   claudeBusy: false, renderBusy: false,
   showCaps: false, monitor: 'live', renders: {}, lastRender: null,
@@ -350,6 +367,8 @@ async function load() {
   $('proj').textContent = p.name + ' / edit';
   S.showCaps = !!S.edl.subtitles; $('capToggle').checked = S.showCaps;
   S.claudeBusy = p.claude_busy; setBusy(S.claudeBusy);
+  S.bin = p.bin || []; S.apps = p.apps || []; S.brand = p.brand;
+  $('brandBadge').innerHTML = S.brand ? `<span class="brandok" title="${esc(S.brand)}">brand ✓</span>` : '<span class="brandno" title="Run the video-use-setup skill to create brand.md">no brand.md</span>';
   (p.chat || []).forEach(renderChatEntry);
   if (!p.video_use) toast('video-use repo not found — rendering disabled (pass --video-use)', 5000);
   derive(); buildPlayers(); renderAll(); seek(0);
@@ -934,6 +953,7 @@ function selectionChips() {
   [...s.overlays].forEach((i) => out.push({ k: 'ov', i, label: `Overlay ${i + 1}` }));
   if (s.words) { const ws = selectedWords(); if (ws.length) out.push({ k: 'words', label: `“${ws.map((f) => f.w.t).join(' ').slice(0, 60)}${ws.length > 10 ? '…' : ''}”` }); }
   if (s.range) out.push({ k: 'range', label: `Range ${fmt(s.range.a, true)}–${fmt(s.range.b, true)}` });
+  [...s.assets].forEach((pth) => out.push({ k: 'asset', p: pth, label: `Asset · ${pth.split('/').pop()}` }));
   if (s.pin) out.push({ k: 'pin', label: `Frame @ ${fmt(s.pin.out)} · (${Math.round(s.pin.x * 100)}%, ${Math.round(s.pin.y * 100)}%)` });
   return out;
 }
@@ -945,10 +965,11 @@ function renderChips() {
   $('chips').querySelectorAll('.chip x').forEach((x) => x.addEventListener('click', () => {
     const c = chips[+x.parentElement.dataset.n];
     if (c.k === 'clip') S.sel.clips.delete(c.i); if (c.k === 'ov') S.sel.overlays.delete(c.i);
-    if (c.k === 'words') S.sel.words = null; if (c.k === 'range') S.sel.range = null; if (c.k === 'pin') S.sel.pin = null;
+    if (c.k === 'words') S.sel.words = null; if (c.k === 'range') S.sel.range = null; if (c.k === 'pin') S.sel.pin = null; if (c.k === 'asset') S.sel.assets.delete(c.p);
     renderAll(); drawPin();
   }));
-  const sug = chips.length ? (S.sel.pin ? ['Add a lower-third here', 'Punch in on this', 'Add a text callout pointing here', 'What do you see in this frame?']
+  const sug = chips.length ? (S.sel.assets.size && !S.sel.clips.size && !S.sel.words && !S.sel.pin ? ['Put this in the corner for the whole video', 'Use this as the end card (3s)', 'Show this full-screen over the selected clip', 'Add this as background music, ducked under speech']
+    : S.sel.pin ? ['Add a lower-third here', 'Punch in on this', 'Add a text callout pointing here', 'What do you see in this frame?']
     : S.sel.words ? ['Cut this', 'Emphasize these words in the captions', 'Add a title card on this line', 'Find a cleaner take of this line']
       : ['Tighten this — cut pauses & filler', 'Make this punchier', 'Is there a better take?', 'Add a b-roll style overlay here'])
     : ['Tighten the whole edit to 60s', 'Remove every um/uh', 'Suggest a stronger hook'];
@@ -979,6 +1000,7 @@ function selectionText() {
     const a = clipAt(s.range.a), b = clipAt(s.range.b - 0.001);
     L.push(`Marked range: output ${s.range.a.toFixed(2)}–${s.range.b.toFixed(2)}s (clips ${a.i + 1}–${b.i + 1})`);
   }
+  [...s.assets].forEach((pth) => { const a = S.bin.find((x) => x.path === pth); L.push(`Selected asset (${a ? a.kind : 'file'}): ${pth}`); });
   if (s.pin) L.push(`User clicked the frame at output ${s.pin.out.toFixed(2)}s (clip ${s.pin.clip + 1}, ${s.pin.src} @ ${s.pin.t.toFixed(2)}s source), point x=${(s.pin.x * 100).toFixed(0)}% y=${(s.pin.y * 100).toFixed(0)}% from top-left. Frame grab attached.`);
   return L.join('\n');
 }
@@ -1027,6 +1049,7 @@ function onClaude(ev) {
     const d = document.createElement('div'); d.className = 'msg asst' + (ev.is_error ? ' err' : ''); d.textContent = ev.text || '(done)'; chat.appendChild(d);
     if (ev.cost) { const mm = document.createElement('div'); mm.className = 'meta'; mm.textContent = `${(ev.duration_ms / 1000).toFixed(1)}s · $${ev.cost.toFixed(3)}`; chat.appendChild(mm); }
     streamEl = null; S.sel.pin = null; renderChips(); drawPin();
+    refreshBin(true);
   }
   chat.scrollTop = chat.scrollHeight;
 }
@@ -1106,15 +1129,59 @@ window.addEventListener('keydown', (e) => {
     const a = S.markIn ?? 0, b = S.out;
     if (b - a > 0.05) { S.sel.range = { a, b }; drawRange(); renderChips(); } else toast('Out must be after In');
   }
-  else if (k === 'Escape') { S.sel = { clips: new Set(), overlays: new Set(), words: null, range: null, pin: null }; renderAll(); drawPin(); }
+  else if (k === 'Escape') { S.sel = { clips: new Set(), overlays: new Set(), words: null, range: null, pin: null, assets: new Set() }; renderAll(); drawPin(); }
   else if (k === 'c' && !mod) { e.preventDefault(); $('prompt').focus(); }
   else if (k === '=' || k === '+') setZoom(S.pps * 1.25);
   else if (k === '-') setZoom(S.pps / 1.25);
 });
 document.querySelectorAll('.left .tabs button').forEach((b) => b.addEventListener('click', () => {
   document.querySelectorAll('.left .tabs button').forEach((x) => x.classList.toggle('on', x === b));
-  $('pane-tx').classList.toggle('hidden', b.dataset.tab !== 'tx'); $('pane-insp').classList.toggle('hidden', b.dataset.tab !== 'insp');
+  ['tx', 'insp', 'bin'].forEach((t) => $('pane-' + t).classList.toggle('hidden', b.dataset.tab !== t));
+  if (b.dataset.tab === 'bin') refreshBin();
 }));
+
+// ---------------------------------------------------------------------------
+// Assets bin — brand folder + edit/assets, fed by connected apps (MCP)
+// ---------------------------------------------------------------------------
+async function refreshBin(markNew) {
+  const before = new Set(S.bin.map((a) => a.path + a.mtime));
+  const r = await fetch('/api/bin', { headers: { 'X-Studio-Token': TOKEN } }).then((x) => x.json()).catch(() => null);
+  if (!Array.isArray(r)) return;
+  S.bin = r; renderBin(markNew ? before : null);
+}
+function assetUrl(a) { return (a.kind === 'video' ? '/overlay' : '/file') + '?path=' + encodeURIComponent(a.path) + '&token=' + TOKEN + '&v=' + a.mtime; }
+function renderBin(before) {
+  const el = $('bin'); if (!el) return;
+  const apps = S.apps.length ? S.apps.map((n) => `<span class="chip"><span>${esc(n)}</span></span>`).join('') : '<span class="meta">No apps configured — run the video-use-setup skill.</span>';
+  let h = `<div class="apps"><span class="meta">Apps</span>${apps}</div>
+    <div class="row" style="gap:6px"><button id="binImport">✦ Import from an app…</button><button class="ghost" id="binRefresh" title="Refresh">↻</button></div>`;
+  const groups = [['assets', 'This edit (edit/assets)'], ['brand', 'Brand kit (client brand/)']];
+  for (const [g, title] of groups) {
+    const items = S.bin.filter((a) => a.group === g);
+    if (g === 'brand' && !items.length && !S.brand) continue;
+    h += `<h5>${title}</h5>`;
+    if (!items.length) { h += `<div class="meta">${g === 'assets' ? 'Empty — ask Claude to pull a logo or image from an app.' : 'No brand files yet.'}</div>`; continue; }
+    h += '<div class="grid">' + items.map((a) => {
+      const icon = { audio: '♪', font: 'Aa', video: '▶', image: '▣' }[a.kind] || '·';
+      const th = a.kind === 'image' ? `<img loading="lazy" src="${assetUrl(a)}">` : a.kind === 'video' ? `<video muted preload="metadata" src="${assetUrl(a)}#t=0.5"></video>` : icon;
+      const isNew = before && !before.has(a.path + a.mtime);
+      return `<div class="tile${S.sel.assets.has(a.path) ? ' sel' : ''}${isNew ? ' new' : ''}" data-p="${esc(a.path)}" title="${esc(a.name)}"><div class="th">${th}</div><div class="nm">${esc(a.name)}</div></div>`;
+    }).join('') + '</div>';
+  }
+  el.innerHTML = h;
+  el.querySelectorAll('.tile').forEach((t) => t.addEventListener('click', (e) => {
+    const pth = t.dataset.p;
+    if (!(e.shiftKey || e.metaKey)) S.sel.assets = new Set(S.sel.assets.has(pth) && S.sel.assets.size === 1 ? [] : [pth]);
+    else S.sel.assets.has(pth) ? S.sel.assets.delete(pth) : S.sel.assets.add(pth);
+    renderBin(); renderChips();
+  }));
+  $('binRefresh').onclick = () => refreshBin(true);
+  $('binImport').onclick = () => {
+    const app = S.apps[0] || 'Canva';
+    $('prompt').value = `Pull our primary logo as a transparent PNG from ${app} into edit/assets/`;
+    $('prompt').focus(); $('prompt').select();
+  };
+}
 (function splitter() {
   const sp = $('split');
   sp.addEventListener('mousedown', (e) => {

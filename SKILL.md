@@ -67,6 +67,7 @@ First-time install lives in `install.md` (clone, deps, ffmpeg, skill registratio
 
 - `ELEVENLABS_API_KEY` resolves — either in the environment or in `.env` at the video-use repo root. If missing, ask the user to paste one and write it to `.env` (never to the user's `<videos_dir>`).
 - If `<videos_dir>/../brand.md` (the client root, one level above the dated shoot folder) exists, read it before asking style questions — it should already answer palette, fonts, tone.
+- If it doesn't exist and this is a brand/client the user will edit for again, offer the one-time setup in `skills/setup/SKILL.md` (connects Canva/Drive/etc. over MCP, pulls the brand kit, writes `brand.md` + `style.json`). Don't force it for one-off edits.
 - `ffmpeg` + `ffprobe` on PATH.
 - Python deps installed (`uv sync` or `pip install -e .` inside the repo).
 - Node.js + npm available if the session needs HyperFrames or Remotion slots. HyperFrames currently requires Node.js 22+.

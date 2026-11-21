@@ -76,7 +76,10 @@ Figure out which agent you are running under, and register once. A symlink of th
     ```bash
     mkdir -p ~/.claude/skills
     ln -sfn ~/Developer/video-use ~/.claude/skills/video-use
+    ln -sfn ~/Developer/video-use/skills/setup ~/.claude/skills/video-use-setup   # brand/app onboarding
     ```
+
+    Then run the setup skill once per brand ("set up video-use for <brand>"): it connects Canva/Drive/etc., pulls the brand kit, and writes `brand.md` + `style.json`.
 
 - **Codex** (`$CODEX_HOME` set, or `~/.codex/` present):
 
