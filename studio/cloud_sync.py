@@ -251,7 +251,13 @@ class Companion:
                 after = max(after, m["seq"])
                 try:
                     if m["type"] == "edl":
-                        if edl_hash(m["edl"]) != self.state.get("hash"):
+                        why = self.unsafe_edl(m["edl"])
+                        if why:
+                            log(f"refused a cloud timeline change: {why}")
+                            self.event("feed", {"ts": int(time.time() * 1000), "text": f"The editing computer refused a change: {why}"})
+                            self.state.update(rev=self.publish(edl_push=self.p.read_edl())["rev"])
+                            self.save_state()
+                        elif edl_hash(m["edl"]) != self.state.get("hash"):
                             self.state.update(hash=edl_hash(m["edl"]), rev=m["rev"])
                             self.save_state()
                             self.p.write_edl(m["edl"])
@@ -264,6 +270,29 @@ class Companion:
                         threading.Thread(target=self.handle_rpc, args=(m,), daemon=True).start()
                 except Exception as e:
                     log("message failed:", e)
+
+    def unsafe_edl(self, edl: dict) -> str | None:
+        """The cloud can be driven by anyone signed in (and by Claude). This machine renders the EDL with
+        ffmpeg, so never accept file paths or filter strings from there that reach outside the project."""
+        local = self.p.read_edl()
+        if not isinstance(edl, dict) or not isinstance(edl.get("ranges"), list):
+            return "not a timeline"
+        for k in set(local) | set(edl):
+            if k in ("ranges", "overlays", "captions", "grade", "total_duration_s"):
+                continue
+            if json.dumps(local.get(k), sort_keys=True) != json.dumps(edl.get(k), sort_keys=True):
+                return f'"{k}" can only be changed on this computer'
+        g = edl.get("grade")
+        if g != local.get("grade") and g is not None and not (isinstance(g, str) and re.fullmatch(r"[a-z0-9_]{1,40}", g)):
+            return "grade must be a preset name"
+        for r in edl["ranges"]:
+            if not isinstance(r, dict) or r.get("source") not in (local.get("sources") or {}):
+                return "a clip uses an unknown source"
+        for ov in edl.get("overlays") or []:
+            f = ov.get("file") if isinstance(ov, dict) else None
+            if not isinstance(f, str) or not self.p.resolve_any(f):
+                return f"graphic file is not inside this project: {str(f)[:80]}"
+        return None
 
     def sync_overlays(self):
         with self.lock:

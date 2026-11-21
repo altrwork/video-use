@@ -87,9 +87,25 @@ export class Workspace extends DurableObject {
     edl.total_duration_s = Math.round(edl.ranges.reduce((t, r) => t + (+r.end - +r.start), 0) * 1000) / 1000;
     return edl;
   }
+  // Edits from Claude or the browser may only touch what an edit needs. The editing computer renders this
+  // document with ffmpeg, so file paths and filter strings must not be settable from here.
+  guardEdl(id, prev, edl) {
+    const same = (x, y) => JSON.stringify(x ?? null) === JSON.stringify(y ?? null);
+    for (const k of new Set([...Object.keys(prev), ...Object.keys(edl)])) {
+      if (['ranges', 'overlays', 'captions', 'grade', 'total_duration_s'].includes(k)) continue;
+      if (!same(prev[k], edl[k])) throw new Error(`"${k}" can only be changed on the editing computer`);
+    }
+    if (!same(prev.grade, edl.grade) && edl.grade != null && !/^[a-z0-9_]{1,40}$/.test(String(edl.grade))) throw new Error('grade must be a preset name (e.g. "auto", "none", or a preset from helpers/grade.py); raw filter strings can only be set on the editing computer');
+    const known = new Set([...(prev.overlays || []).map((o) => o.file), ...this.doc(id, 'bin', []).map((f) => f.path)]);
+    (edl.overlays || []).forEach((o, i) => {
+      if (known.has(o.file)) return;
+      if (o.file.startsWith('/') || o.file.includes('\\') || /^[A-Za-z]:/.test(o.file) || o.file.split('/').includes('..')) throw new Error(`overlays[${i}].file must be a path from list_assets or a path inside the project (no absolute paths, no "..")`);
+    });
+  }
   putEdl(id, edl, origin, what) {
     const p = this.project(id); if (!p) throw new Error('unknown project');
     edl = this.validateEdl(edl);
+    if (origin !== 'sync') this.guardEdl(id, JSON.parse(p.edl), edl);
     const text = JSON.stringify(edl);
     if (text === p.edl) return p.rev;
     const rev = (p.rev || 0) + 1;
