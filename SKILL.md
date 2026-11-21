@@ -371,7 +371,9 @@ Match the source unless the user asked for something specific. Common targets: `
 - `start`/`end` are **source** seconds, so a cue follows its clip through trims and reorders. A cue spanning a cut is split per kept range.
 - No `text` → the transcript words inside the cue (UPPERCASE), so cuts stay correct. `text` → exactly that (`\n` = line break).
 - `pos` = caption centre as frame fractions; per-cue `pos` beats `captions.pos`, which beats the style's bottom placement. Edited captions render through an ASS file next to the SRT (libass ignores `\pos` in SRT).
-- Font, size and colours still come from `style.json`. Keep cues non-overlapping.
+- Font, size and colours still come from `style.json`. Keep cues non-overlapping. `scale` (per cue, or `captions.scale` for all) resizes relative to the style size.
+
+**Overlay placement (optional).** An overlay may carry `x`, `y` (top-left) and `w` (width) as fractions of the output frame; height follows the clip's aspect. render.py scales and places it, identically at draft/preview/final sizes. Without them the clip is pasted at native pixels at 0,0, so render full-frame graphics at the output size (1920 on the long edge). The Studio sets these when the user drags or resizes a graphic, so keep them when re-rendering a graphic.
 
 ## Memory — `project.md`
 
