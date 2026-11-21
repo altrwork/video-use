@@ -535,7 +535,8 @@ How the EDL maps to the timeline
   selected graphic back to its source project by that path.
   When the user selects an existing graphic from a slot and asks for a change, edit that slot's source and re-render to the
   SAME file path, keeping its overlay entry (and x/y/w) as is.
-- Keep the schema render.py-compatible: sources, ranges[{{source,start,end,beat,quote,reason}}], grade, overlays, subtitles.
+- Keep the schema render.py-compatible: sources, ranges[{{source,start,end,beat,quote,reason}}], grade, grade_request, overlays, subtitles.
+- Never change colour on your own. render.py ignores colour/contrast/sharpness filters in `grade` unless `grade_request` holds the user's own words asking for a look; set it only then, quoting them. Crops and scales in `grade` always apply.
 - Captions (shown when edl.subtitles is set). Two modes:
   - auto: no edl.captions.cues → render.py chunks the transcript (~2 words, UPPERCASE).
   - edited: edl.captions = {{"pos": [x,y]?, "cues": [{{"source", "start", "end", "text"?, "pos"?}}]}}. Cue times are SOURCE time
@@ -760,11 +761,13 @@ class RenderRunner:
             raise RuntimeError("video-use helpers not found; pass --video-use <path>")
         if self.busy():
             raise RuntimeError("A render is already running")
-        out_name = {"draft": "draft.mp4", "preview": "preview.mp4", "final": "final.mp4"}[mode]
+        out_name = {"draft": "draft.mp4", "preview": "preview.mp4", "final": "final.mp4", "source": "source.mp4"}[mode]
         out = self.project.edit_dir / out_name
         cmd = [self.python(), str(vu / "helpers" / "render.py"), str(self.project.edl_path), "-o", str(out)]
         if mode in ("draft", "preview"):
             cmd.append(f"--{mode}")
+        if mode == "source":
+            cmd.append("--source-quality")
         edl = self.project.read_edl()
         if edl.get("subtitles"):
             cmd.append("--build-subtitles")
@@ -889,7 +892,7 @@ def make_handler(project: Project, claude: ClaudeRunner, render: RenderRunner, p
                 "notes": {"context": project.read_notes("context"), "prefs": project.read_notes("prefs")},
                 "capstyle": project.caption_style(),
                 "renders": {k: (int((project.edit_dir / f).stat().st_mtime) if (project.edit_dir / f).exists() else 0)
-                            for k, f in (("draft", "draft.mp4"), ("preview", "preview.mp4"), ("final", "final.mp4"))},
+                            for k, f in (("draft", "draft.mp4"), ("preview", "preview.mp4"), ("final", "final.mp4"), ("source", "source.mp4"))},
             }
 
         # -- routes --
@@ -1007,7 +1010,10 @@ def make_handler(project: Project, claude: ClaudeRunner, render: RenderRunner, p
                 return self.send_json({"ok": True})
             if path == "/api/render":
                 try:
-                    f = render.start(body.get("mode", "preview"))
+                    mode = body.get("mode", "preview")
+                    if mode not in ("draft", "preview", "final", "source"):
+                        return self.send_json({"error": "mode must be draft, preview, final or source"}, 400)
+                    f = render.start(mode)
                 except RuntimeError as e:
                     return self.send_json({"error": str(e)}, 409)
                 return self.send_json({"ok": True, "file": f})

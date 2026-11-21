@@ -96,9 +96,10 @@ export class Workspace extends DurableObject {
     const keys = (o, allowed, what) => { for (const k of Object.keys(o)) if (!allowed.includes(k)) throw new Error(`${what}: "${k}" is not an allowed field (allowed: ${allowed.join(', ')})`); };
     const pos = (v) => Array.isArray(v) && v.length === 2 && num(v[0], -1, 2) && num(v[1], -1, 2);
     for (const k of new Set([...Object.keys(prev), ...Object.keys(edl)])) {
-      if (['ranges', 'overlays', 'captions', 'grade', 'total_duration_s'].includes(k)) continue;
+      if (['ranges', 'overlays', 'captions', 'grade', 'grade_request', 'total_duration_s'].includes(k)) continue;
       if (!same(prev[k], edl[k])) throw new Error(`"${k}" can only be changed on the editing computer`);
     }
+    if (edl.grade_request != null && !str(edl.grade_request, 500)) throw new Error('grade_request must be plain text (the user\'s own words asking for a look)');
     if (!same(prev.grade, edl.grade) && edl.grade != null) {
       const grades = this.doc(id, 'grades', ['auto']);
       if (!grades.includes(edl.grade)) throw new Error(`grade must be one of: ${grades.join(', ')}. Raw filter strings can only be set on the editing computer.`);
@@ -247,7 +248,7 @@ export class Workspace extends DurableObject {
       const text = String(body.text || '').slice(0, 100000); this.setDoc(id, 'notes:' + body.which, text); this.toCompanion(id, { type: 'notes', which: body.which, text });
       return json({ ok: true });
     }
-    if (sub === '/api/render') { await this.rpc(id, 'render', { mode: ['draft', 'preview', 'final'].includes(body.mode) ? body.mode : 'preview' }, 20000); return json({ ok: true }); }
+    if (sub === '/api/render') { await this.rpc(id, 'render', { mode: ['draft', 'preview', 'final', 'source'].includes(body.mode) ? body.mode : 'preview' }, 20000); return json({ ok: true }); }
     if (sub === '/api/render/stop') { await this.rpc(id, 'render_stop', {}, 20000); return json({ ok: true }); }
     if (sub === '/api/asset-clip') return json({ ok: true, ...(await this.rpc(id, 'asset_clip', { path: String(body.path || ''), duration: +body.duration || 3 })) });
     if (sub.startsWith('/api/claude')) return json({ error: 'In the cloud editor Claude works through the Video Use connector. Ask Claude there; it can see your selection.' }, 400);

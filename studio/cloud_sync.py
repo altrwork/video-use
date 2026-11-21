@@ -106,7 +106,7 @@ class Companion:
              "brand": str(self.p.client_root / "brand.md") if self.p.client_root else None,
              "notes:context": self.p.read_notes("context"), "notes:prefs": self.p.read_notes("prefs"),
              "renders": {k: (int((self.p.edit_dir / f).stat().st_mtime) if (self.p.edit_dir / f).exists() else 0)
-                         for k, f in (("draft", "draft.mp4"), ("preview", "preview.mp4"), ("final", "final.mp4"))}}
+                         for k, f in (("draft", "draft.mp4"), ("preview", "preview.mp4"), ("final", "final.mp4"), ("source", "source.mp4"))}}
         for n in names:
             d["transcript:" + n] = self.p.transcript(n)
         return d
@@ -157,7 +157,7 @@ class Companion:
                 f = self.p.overlay_proxy(a["path"])
                 if f:
                     out.append(("overlay/" + a["path"], f))
-        for f in ("draft.mp4", "preview.mp4", "final.mp4"):
+        for f in ("draft.mp4", "preview.mp4", "final.mp4", "source.mp4"):
             if (self.p.edit_dir / f).exists():
                 out.append(("file/" + str((self.p.edit_dir / f).relative_to(self.p.videos_dir)), self.p.edit_dir / f))
         return out
@@ -296,10 +296,13 @@ class Companion:
         text = lambda v, n: isinstance(v, str) and len(v) <= n and not re.search(r"[\x00-\x09\x0b-\x1f\x7f]", v)
         pos = lambda v: isinstance(v, list) and len(v) == 2 and num(v[0], -1, 2) and num(v[1], -1, 2)
         for k in set(local) | set(edl):
-            if k in ("ranges", "overlays", "captions", "grade", "total_duration_s"):
+            if k in ("ranges", "overlays", "captions", "grade", "grade_request", "total_duration_s"):
                 continue
             if dumps(local.get(k)) != dumps(edl.get(k)):
                 return f'"{k}" can only be changed on this computer'
+        gr = edl.get("grade_request")
+        if gr is not None and not text(gr, 500):
+            return "grade_request must be plain text"
         g = edl.get("grade")
         if g != local.get("grade") and g is not None and g not in self.grades():
             return "grade must be a known preset name"
@@ -385,8 +388,8 @@ class Companion:
             log("event:", e)
 
     def rpc_render(self, mode: str = "preview"):
-        if mode not in ("draft", "preview", "final"):
-            raise RuntimeError("mode must be draft, preview or final")
+        if mode not in ("draft", "preview", "final", "source"):
+            raise RuntimeError("mode must be draft, preview, final or source")
         if self.render_proc and self.render_proc.poll() is None:
             raise RuntimeError("a render is already running")
         vu = self.p.video_use_dir
@@ -397,6 +400,8 @@ class Companion:
         cmd = [str(py) if py.exists() else sys.executable, str(vu / "helpers" / "render.py"), str(self.p.edl_path), "-o", str(out)]
         if mode in ("draft", "preview"):
             cmd.append(f"--{mode}")
+        if mode == "source":
+            cmd.append("--source-quality")
         if self.p.read_edl().get("subtitles"):
             cmd.append("--build-subtitles")
         self.render_proc = subprocess.Popen(cmd, cwd=str(self.p.videos_dir), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
