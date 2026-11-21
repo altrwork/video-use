@@ -1,0 +1,10 @@
+{
+  "name": "video-use-studio",
+  "main": "src/index.js",
+  "compatibility_date": "2026-06-01",
+  "rules": [{ "type": "Text", "globs": ["**/*.html"], "fallthrough": true }],
+  "durable_objects": { "bindings": [{ "name": "WORKSPACE", "class_name": "Workspace" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Workspace"] }],
+  "kv_namespaces": [{ "binding": "OAUTH_KV" }],
+  "observability": { "enabled": true }
+}
