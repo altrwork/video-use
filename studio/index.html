@@ -108,6 +108,7 @@ kbd{font-family:ui-monospace,Menlo,monospace;font-size:10.5px;background:var(--p
 .hov{position:absolute;border:1px dashed #ffffffaa;pointer-events:none;z-index:3;border-radius:2px}
 .notes{display:flex;flex-direction:column;gap:6px;padding:10px;height:100%;box-sizing:border-box}.notes label{font-size:12px;font-weight:600;margin-top:4px}.notes label small{display:block;font-weight:400;color:var(--mute)}.notes textarea{flex:1;min-height:90px;resize:none;background:var(--panel2);color:var(--ink);border:1px solid var(--line2);border-radius:7px;padding:8px;font:12px/1.45 inherit}
 .change{border:1px solid var(--line2);border-radius:8px;padding:7px 9px;font-size:12px;color:var(--mute);display:flex;gap:8px;align-items:center}.change span{flex:1}.change.reverted{opacity:.5}
+.cloud #sugg,.cloud #newChat,.cloud #ctxPull,.cloud #binImport{display:none}.cloud #prompt{color:var(--mute);resize:none}
 .askpill{position:fixed;z-index:60;background:var(--panel2);border:1px solid var(--line2);border-radius:999px;padding:3px 10px;font-size:12px;color:var(--ink);cursor:pointer;box-shadow:0 4px 14px #0008;white-space:nowrap}
 .askpill:hover{border-color:var(--accent)}.askpill kbd{margin-left:6px;opacity:.6}
 .xf i{position:absolute;width:11px;height:11px;margin:-6px 0 0 -6px;background:#fff;border:2px solid var(--accent);border-radius:2px;pointer-events:auto}
@@ -361,8 +362,10 @@ function toast(msg, ms = 2600) {
   setTimeout(() => { t.style.opacity = 0; setTimeout(() => t.remove(), 300); }, ms);
 }
 const TOKEN = '__STUDIO_TOKEN__';
+// Served from Cloudflare the page lives at /p/<project>/ and Claude edits through the MCP connector instead of the panel.
+const BASE = (location.pathname.match(/^\/p\/[^/]+/) || [''])[0], CLOUD = !!BASE, U = (path) => BASE + path;
 const api = async (path, body) => {
-  const r = await fetch(path, body ? { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Studio-Token': TOKEN }, body: JSON.stringify(body) } : { headers: { 'X-Studio-Token': TOKEN } });
+  const r = await fetch(U(path), body ? { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Studio-Token': TOKEN }, body: JSON.stringify(body) } : { headers: { 'X-Studio-Token': TOKEN } });
   const j = await r.json().catch(() => ({}));
   return { ok: r.ok, status: r.status, ...j };
 };
@@ -433,7 +436,7 @@ async function load() {
   $('proj').textContent = p.name + ' / edit';
   S.showCaps = !!S.edl.subtitles; $('capToggle').checked = S.showCaps;
   S.claudeBusy = p.claude_busy; setBusy(S.claudeBusy);
-  S.bin = p.bin || []; S.apps = p.apps || []; S.brand = p.brand; setNotes(p.notes); S.capstyle = p.capstyle || {};
+  S.bin = p.bin || []; S.apps = p.apps || []; S.brand = p.brand; setNotes(p.notes); if (CLOUD) cloudUi(p); S.capstyle = p.capstyle || {};
   $('brandBadge').innerHTML = S.brand ? `<span class="brandok" title="${esc(S.brand)}">brand ✓</span>` : '<span class="brandno" title="Run the video-use-setup skill to create brand.md">no brand.md</span>';
   (p.chat || []).forEach(renderChatEntry);
   if (!p.video_use) toast('video-use repo not found — rendering disabled (pass --video-use)', 5000);
@@ -442,21 +445,20 @@ async function load() {
 function setAssets(name, a) {
   S.assets[name] = a;
   if (a.thumbs && (!S.imgs[name] || S.imgs[name].src.indexOf(a.thumbs.url) < 0)) {
-    const img = new Image(); img.onload = () => renderTimeline(); img.src = a.thumbs.url + '&token=' + TOKEN; S.imgs[name] = img;
+    const img = new Image(); img.onload = () => renderTimeline(); img.src = U(a.thumbs.url) + '&token=' + TOKEN; S.imgs[name] = img;
   }
 }
-function edlKey(e) { return JSON.stringify({ r: e.ranges, o: e.overlays, g: e.grade, s: e.subtitles, src: e.sources }); }
+function edlKey(e) { return JSON.stringify({ r: e.ranges, o: e.overlays, g: e.grade, s: e.subtitles, src: e.sources, c: e.captions }); }
 
-function connectEvents() {
-  const es = new EventSource('/api/events?token=' + encodeURIComponent(TOKEN));
-  es.addEventListener('edl', (ev) => {
-    const d = JSON.parse(ev.data);
+const EV = {
+  edl(d) {
     Object.assign(S.transcripts, d.transcripts || {}); Object.assign(S.media, d.media || {});
     if (edlKey(d.edl) === edlKey(S.edl)) { S.mtime = d.mtime; return; }
     // external change (Claude or a text editor) — keep it undoable and show what moved
     const before = new Set((S.edl.ranges || []).map((r) => `${r.source}|${r.start}|${r.end}`));
     const beforeOv = new Set((S.edl.overlays || []).map((o) => JSON.stringify(o)));
-    S.history.push(JSON.stringify(S.edl)); S.future = [];
+    const prevJson = JSON.stringify(S.edl);
+    S.history.push(prevJson); S.future = [];
     S.edl = d.edl; S.mtime = d.mtime;
     const changed = (S.edl.ranges || []).map((r, i) => before.has(`${r.source}|${r.start}|${r.end}`) ? -1 : i).filter((i) => i >= 0);
     const changedOv = (S.edl.overlays || []).map((o, i) => beforeOv.has(JSON.stringify(o)) ? -1 : i).filter((i) => i >= 0);
@@ -466,14 +468,53 @@ function connectEvents() {
     const n = changed.length + changedOv.length;
     toast(n ? `Timeline updated — ${n} item${n > 1 ? 's' : ''} changed · ⌘Z to undo` : 'Timeline updated · ⌘Z to undo');
     setSave('synced');
-  });
-  es.addEventListener('assets', async (ev) => {
-    const { source } = JSON.parse(ev.data);
+    if (CLOUD) changeCard(prevJson, d.origin === 'mcp' ? 'Claude' : d.origin === 'sync' ? 'The editing computer' : 'Another window');
+  },
+  async assets({ source }) {
     setAssets(source, await api('/api/assets/' + encodeURIComponent(source)));
     renderTimeline();
-  });
-  es.addEventListener('claude', (ev) => onClaude(JSON.parse(ev.data)));
-  es.addEventListener('render', (ev) => onRender(JSON.parse(ev.data)));
+  },
+  claude: (d) => onClaude(d),
+  render: (d) => onRender(d),
+  // cloud only
+  feed: (d) => feedLine(d),
+  companion: (d) => setCompanion(d.online),
+  notes: () => api('/api/notes').then(setNotes),
+  bin: () => { refreshBin(true); S.ovBust = Date.now(); buildPlayers(); },
+};
+function connectEvents() {
+  if (!CLOUD) {
+    const es = new EventSource('/api/events?token=' + encodeURIComponent(TOKEN));
+    for (const k of ['edl', 'assets', 'claude', 'render']) es.addEventListener(k, (ev) => EV[k](JSON.parse(ev.data)));
+    return;
+  }
+  let wait = 1000;
+  (function open() {
+    const ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + BASE + '/ws');
+    ws.onopen = () => { wait = 1000; };
+    ws.onmessage = (m) => { try { const { event, data } = JSON.parse(m.data); EV[event]?.(data); } catch (_) {} };
+    ws.onclose = () => { setTimeout(open, wait); wait = Math.min(wait * 2, 15000); };
+  })();
+}
+// ---- cloud mode: Claude works through the MCP connector; this page shows what it did and shares your selection ----
+function feedLine(d) { const l = document.createElement('div'); l.className = 'tool-line'; l.textContent = d.text; $('chat').appendChild(l); $('chat').scrollTop = $('chat').scrollHeight; }
+function setCompanion(on) {
+  S.companion = on; let b = $('compBadge');
+  if (!b) { b = document.createElement('span'); b.id = 'compBadge'; $('brandBadge').after(b); }
+  b.className = on ? 'brandok' : 'brandno'; b.style.marginLeft = '6px';
+  b.textContent = on ? 'computer online' : 'computer offline'; b.title = on ? 'The editing computer is connected: rendering and imports work.' : 'Start the companion on the editing computer (python studio/cloud_sync.py <edit_dir>) to render and import files. You can still edit.';
+}
+let selTimer = null, selSent = '';
+function pushSelection() {
+  if (!CLOUD) return;
+  clearTimeout(selTimer); selTimer = setTimeout(() => { const t = selectionChips().length ? selectionText() : ''; if (t !== selSent) { selSent = t; api('/api/selection', { text: t }); } }, 500);
+}
+function cloudUi(p) {
+  document.body.classList.add('cloud');
+  $('prompt').readOnly = true; $('prompt').placeholder = '';
+  $('prompt').value = 'Claude edits this project through the Video Use connector.\n\nSelect something here, then tell Claude what to change. It can see your selection.';
+  $('sendBtn').textContent = 'Copy connector URL'; $('sendBtn').onclick = () => navigator.clipboard.writeText(location.origin + '/mcp').then(() => toast('Copied — add it in Claude under Connectors'));
+  setCompanion(!!p.cloud.online); (p.cloud.feed || []).forEach(feedLine);
 }
 function flash(clips, ovs) {
   requestAnimationFrame(() => {
@@ -648,7 +689,7 @@ function buildPlayers() {
   for (const name of Object.keys(S.edl.sources || {})) {
     if (players[name]) continue;
     const v = document.createElement('video');
-    v.className = 'src'; v.preload = 'auto'; v.playsInline = true; v.src = '/media/' + encodeURIComponent(name) + '?token=' + TOKEN;
+    v.className = 'src'; v.preload = 'auto'; v.playsInline = true; v.src = U('/media/') + encodeURIComponent(name) + '?token=' + TOKEN;
     v.addEventListener('loadeddata', () => { if (S.active >= 0 && S.clips[S.active]?.src === name) drawStage(); });
     stage.insertBefore(v, $('cap')); players[name] = v;
   }
@@ -656,7 +697,7 @@ function buildPlayers() {
   (S.edl.overlays || []).forEach((ov, i) => {
     const v = document.createElement('video');
     v.className = 'ov'; v.muted = true; v.preload = 'auto'; v.playsInline = true;
-    v.src = '/overlay?path=' + encodeURIComponent(ov.file) + '&token=' + TOKEN + '&b=' + (S.ovBust || 0);
+    v.src = U('/overlay?path=') + encodeURIComponent(ov.file) + '&token=' + TOKEN + '&b=' + (S.ovBust || 0);
     v.addEventListener('loadedmetadata', () => placeOverlay(v, ov));
     stage.insertBefore(v, $('cap')); ovPlayers.push({ el: v, ov, i }); placeOverlay(v, ov);
   });
@@ -1326,7 +1367,7 @@ function capDown(e) {
 // Small, non-focus-stealing "ask Claude about this" pill next to what was just selected on the frame.
 function hideAskPill() { document.querySelector('.askpill')?.remove(); }
 function showAskPill(cx, cy) {
-  hideAskPill();
+  hideAskPill(); if (CLOUD) return;
   const b = document.createElement('div'); b.className = 'askpill'; b.innerHTML = '✦ Ask Claude <kbd>/</kbd>';
   b.style.left = clamp(cx + 14, 8, innerWidth - 150) + 'px'; b.style.top = clamp(cy + 14, 8, innerHeight - 40) + 'px';
   b.dataset.x = cx; b.dataset.y = cy;
@@ -1334,6 +1375,7 @@ function showAskPill(cx, cy) {
   document.body.appendChild(b);
 }
 function askHere() {
+  if (CLOUD) return toast('Tell Claude what to change — it can see your selection');
   const pill = document.querySelector('.askpill'), st = $('stage').getBoundingClientRect();
   const cx = pill ? +pill.dataset.x : st.left + st.width / 2, cy = pill ? +pill.dataset.y : st.top + st.height / 2;
   hideAskPill();
@@ -1484,7 +1526,7 @@ function selectionChips() {
   return out;
 }
 function renderChips() {
-  const chips = selectionChips();
+  const chips = selectionChips(); pushSelection();
   $('chips').innerHTML = chips.length
     ? chips.map((c, n) => `<span class="chip" data-n="${n}"><span>${esc(c.label)}</span><x>×</x></span>`).join('')
     : `<span class="chip dim"><span>Playhead ${fmt(S.out, true)} — nothing selected</span></span>`;
@@ -1503,8 +1545,9 @@ function renderChips() {
       : ['Tighten this — cut pauses & filler', 'Make this punchier', 'Is there a better take?', 'Add a b-roll style overlay here'])
     : ['Tighten the whole edit to 60s', 'Remove every um/uh', 'Suggest a stronger hook', S.apps.length ? `Illustrate what\'s said with photos from ${S.apps[0]}` : 'Review the cut and tell me what\'s weak'];
   $('sugg').innerHTML = sug.map((t) => `<button>${esc(t)}</button>`).join('');
-  $('sugg').querySelectorAll('button').forEach((b) => b.addEventListener('click', () => { $('prompt').value = b.textContent; $('prompt').focus(); }));
+  $('sugg').querySelectorAll('button').forEach((b) => b.addEventListener('click', () => { if (CLOUD) return copyForClaude(b.textContent); $('prompt').value = b.textContent; $('prompt').focus(); }));
 }
+function copyForClaude(t) { navigator.clipboard.writeText(t).then(() => toast('Copied — paste it to Claude'), () => toast(t)); }
 function selectionText() {
   const L = [], s = S.sel, wtext = (src, a, b) => wordsIn(src, a, b).map((w) => w.t).join(' ');
   const p = outToSrc(S.out);
@@ -1572,11 +1615,11 @@ function describeChange(a, b) {
   if (JSON.stringify(a.grade || null) !== JSON.stringify(b.grade || null)) out.push('grade changed');
   return out;
 }
-function changeCard(beforeJson) {
+function changeCard(beforeJson, who) {
   const before = JSON.parse(beforeJson), lines = describeChange(before, S.edl);
   if (!lines.length) return;
   const d = document.createElement('div'); d.className = 'change';
-  d.innerHTML = `<span>${esc(lines.join(' · '))}</span><button class="ghost">Revert</button>`;
+  d.innerHTML = `<span>${esc((who ? who + ': ' : '') + lines.join(' · '))}</span><button class="ghost">Revert</button>`;
   const after = JSON.stringify(S.edl);
   d.querySelector('button').onclick = () => {
     if (JSON.stringify(S.edl) !== after && !confirm('You have edited since. Revert to before this change anyway?')) return;
@@ -1587,7 +1630,7 @@ function changeCard(beforeJson) {
 let streamEl = null, turnBefore = null;
 async function send(text) {
   text = (text ?? $('prompt').value).trim();
-  if (!text || S.claudeBusy) return;
+  if (CLOUD || !text || S.claudeBusy) return;
   clearTimeout(saveTimer); if ($('save').textContent === 'saving…') await save();
   pause();
   const chips = selectionChips().map((c) => c.label);
@@ -1675,7 +1718,7 @@ function setMonitor(m) {
     pause();
     const f = S.lastRender?.file || (S.renders.preview ? 'edit/preview.mp4' : S.renders.final ? 'edit/final.mp4' : S.renders.draft ? 'edit/draft.mp4' : null);
     if (!f) { toast('Nothing rendered yet — use Render ▾'); return setMonitor('live'); }
-    const url = '/file?path=' + encodeURIComponent(f) + '&token=' + TOKEN + '&v=' + (S.lastRender?.v || Date.now());
+    const url = U('/file?path=') + encodeURIComponent(f) + '&token=' + TOKEN + '&v=' + (S.lastRender?.v || Date.now());
     if ($('rvid').getAttribute('src') !== url) $('rvid').src = url;
   } else $('rvid').pause();
 }
@@ -1705,6 +1748,7 @@ $('motionBtn').onclick = (e) => { e.stopPropagation(); $('motionMenu').classList
 window.addEventListener('click', () => $('motionMenu').classList.remove('open'));
 $('motionMenu').querySelectorAll('[data-m]').forEach((b) => b.addEventListener('click', () => {
   const w = selectionWindow();
+  if (CLOUD) return copyForClaude(MOTION[b.dataset.m](w) + ' Use our brand colours and fonts. Render it with a transparent background at the output frame size, then add it to the Video Use project as an overlay (add_asset_from_url, then patch_edl).');
   $('prompt').value = MOTION[b.dataset.m](w) +
     ' Use our brand colours and fonts (brand.md). Build it with Remotion or HyperFrames in its own animations slot, transparent background, then add it to the timeline as an overlay.';
   $('prompt').focus();
@@ -1762,7 +1806,7 @@ document.querySelectorAll('.left .tabs button').forEach((b) => b.addEventListene
 // ---------------------------------------------------------------------------
 async function refreshBin(markNew) {
   const before = new Set(S.bin.map((a) => a.path + a.mtime));
-  const r = await fetch('/api/bin', { headers: { 'X-Studio-Token': TOKEN } }).then((x) => x.json()).catch(() => null);
+  const r = await fetch(U('/api/bin'), { headers: { 'X-Studio-Token': TOKEN } }).then((x) => x.json()).catch(() => null);
   if (!Array.isArray(r)) return;
   S.bin = r; renderBin(markNew ? before : null);
 }
@@ -1785,7 +1829,7 @@ async function addAssetToTimeline(pth) {
   pause(); seek(start + 0.05); renderAll();
   toast('Added to V2 — drag it on the frame, corners resize');
 }
-function assetUrl(a) { return (a.kind === 'video' ? '/overlay' : '/file') + '?path=' + encodeURIComponent(a.path) + '&token=' + TOKEN + '&v=' + a.mtime; }
+function assetUrl(a) { return U(a.kind === 'video' ? '/overlay' : '/file') + '?path=' + encodeURIComponent(a.path) + '&token=' + TOKEN + '&v=' + a.mtime; }
 function renderBin(before) {
   const el = $('bin'); if (!el) return;
   const apps = S.apps.length ? S.apps.map((n) => `<span class="chip"><span>${esc(n)}</span></span>`).join('') : '<span class="meta">No apps configured — run the video-use-setup skill.</span>';
