@@ -133,6 +133,50 @@ class Project:
                 out[k.strip()] = v.strip()
         return out
 
+    def media_dims(self, path: Path) -> tuple[int, int, float]:
+        try:
+            d = json.loads(subprocess.run(
+                ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+                 "stream=width,height:format=duration", "-of", "json", str(path)],
+                capture_output=True, text=True).stdout)
+            st = d["streams"][0]
+            return int(st["width"]), int(st["height"]), float(d.get("format", {}).get("duration") or 0)
+        except Exception:
+            return 0, 0, 0.0
+
+    def asset_clip(self, src: str, duration: float) -> dict:
+        """Make an asset placeable on V2: stills become an alpha ProRes clip at
+        native size (≤1920 wide); videos are used as-is. Returns the EDL file
+        path (relative to the edit dir when inside it) and native dims."""
+        path = self.resolve_any(src)
+        if not path:
+            raise RuntimeError("asset not found")
+        ext = path.suffix.lower()
+        if ext in (".mp4", ".mov", ".webm", ".m4v"):
+            w, h, d = self.media_dims(path)
+            out = path
+        elif ext in (".png", ".jpg", ".jpeg", ".webp", ".gif"):
+            duration = max(0.2, min(float(duration or 3), 600))
+            clips = self.assets_dir / "clips"
+            clips.mkdir(exist_ok=True)
+            out = clips / f"{safe(path.stem)}_{duration:.2f}s.mov"
+            if not out.exists() or out.stat().st_mtime < path.stat().st_mtime:
+                r = subprocess.run(
+                    ["ffmpeg", "-v", "error", "-y", "-loop", "1", "-framerate", "30", "-t", f"{duration:.3f}",
+                     "-i", str(path), "-vf", "format=rgba,scale='min(iw,1920)':-2", "-c:v", "prores_ks",
+                     "-profile:v", "4444", "-pix_fmt", "yuva444p10le", str(out)],
+                    capture_output=True, text=True)
+                if r.returncode != 0:
+                    raise RuntimeError("ffmpeg could not convert that image: " + r.stderr[-300:])
+            w, h, d = self.media_dims(out)
+        else:
+            raise RuntimeError("only images and videos can go on the timeline (SVG: export it as PNG first)")
+        try:
+            rel = str(out.relative_to(self.edit_dir))
+        except ValueError:
+            rel = str(out)
+        return {"file": rel, "w": w, "h": h, "duration": d or duration}
+
     def assets_bin(self) -> list[dict]:
         """Media the user can point Claude at: edit/assets/ (pulled from apps,
         generated) and the client's brand/ folder."""
@@ -147,7 +191,7 @@ class Project:
         for group, base in groups:
             for f in sorted(base.rglob("*")):
                 k = kinds.get(f.suffix.lower())
-                if not k or not f.is_file() or f.name.startswith("."):
+                if not k or not f.is_file() or f.name.startswith(".") or (group == "assets" and f.parent.name == "clips"):
                     continue
                 out.append({"group": group, "kind": k, "name": str(f.relative_to(base)),
                             "path": str(f.resolve()), "size": f.stat().st_size,
@@ -448,7 +492,18 @@ Connected apps (MCP) — pull assets straight from them instead of asking the us
 
 How the EDL maps to the timeline
 - Clips are edl.ranges in order, numbered 1..N in the UI. Output time of clip i starts at the sum of (end-start) of clips before it.
-- Overlays (edl.overlays: {{file, start_in_output, duration}}) are in OUTPUT time. Paths resolve relative to the edit dir.
+- Overlays (edl.overlays: {{file, start_in_output, duration, x?, y?, w?}}) are in OUTPUT time. Paths resolve relative to the edit dir.
+  x/y = top-left and w = width, as fractions of the output frame (height follows the clip's aspect). Without them the clip is
+  placed at native pixels at 0,0, so either render full-frame at the output size or set x/y/w. The user resizes/moves
+  overlays in the studio by changing x/y/w — keep those when you edit or re-render a graphic.
+- Caption size: captions.scale (all) or a cue's "scale" (1 = style size).
+- Motion graphics: build each one in {edit_dir}/animations/slot_<id>/ (HyperFrames or Remotion per SKILL.md; Remotion needs
+  Node 22+ and a project-local install), use the brand palette/fonts from brand.md, render with alpha (ProRes 4444 .mov or
+  VP9 .webm) at the OUTPUT frame size {out_w}x{out_h} (not the source size), or tightly cropped + x/y/w, verify with ffprobe,
+  then add/update edl.overlays. Render INTO the slot folder (animations/slot_<id>/render.mov or .webm): the studio links a
+  selected graphic back to its source project by that path.
+  When the user selects an existing graphic from a slot and asks for a change, edit that slot's source and re-render to the
+  SAME file path, keeping its overlay entry (and x/y/w) as is.
 - Keep the schema render.py-compatible: sources, ranges[{{source,start,end,beat,quote,reason}}], grade, overlays, subtitles.
 - Captions (shown when edl.subtitles is set). Two modes:
   - auto: no edl.captions.cues → render.py chunks the transcript (~2 words, UPPERCASE).
@@ -524,6 +579,13 @@ class ClaudeRunner:
                     f"- {a}" for a in attachments)
             p = self.project
             vu = p.video_use_dir
+            try:
+                first = p.read_edl()["ranges"][0]["source"]
+                m = p.probe(first)
+                ar = m["width"] / m["height"] if m.get("height") else 16 / 9
+            except Exception:
+                ar = 16 / 9
+            out_dims = (1920, int(round(1920 / ar / 2)) * 2) if ar >= 1 else (int(round(1920 * ar / 2)) * 2, 1920)
             sysprompt = SYSTEM_PROMPT.format(
                 videos_dir=p.videos_dir, edit_dir=p.edit_dir, edl=p.edl_path,
                 helpers=(vu / "helpers") if vu else "(video-use not found)",
@@ -531,6 +593,7 @@ class ClaudeRunner:
                 brand=(f"- client brand: {p.client_root}/brand.md (read it before any styling decision), "
                        f"{p.client_root}/style.json (captions), assets in {p.client_root}/brand/"
                        if p.client_root else "- no client brand.md found (the video-use-setup skill creates one)"),
+                out_w=out_dims[0], out_h=out_dims[1],
                 apps="\n".join(f"- {a.get('name')}: {', '.join(a['allow'])} — {a.get('use_for', '')}" for a in p.apps)
                      or "- none enabled (the user can enable apps by running the video-use-setup skill)",
             )
@@ -823,6 +886,10 @@ def make_handler(project: Project, claude: ClaudeRunner, render: RenderRunner, p
             # everything but the page itself needs the token (API, media, renders, cache)
             if not self.token_ok(u.query):
                 return
+            if path == "/api/ovdims":
+                f = project.resolve_any(parse_qs(u.query).get("path", [""])[0])
+                w, h, d = project.media_dims(f) if f else (0, 0, 0.0)
+                return self.send_json({"w": w, "h": h, "duration": d})
             if path == "/api/bin":
                 return self.send_json(project.assets_bin())
             if path == "/api/project":
@@ -878,6 +945,11 @@ def make_handler(project: Project, claude: ClaudeRunner, render: RenderRunner, p
                 except RuntimeError as e:
                     return self.send_json({"error": str(e)}, 409)
                 return self.send_json({"ok": True, "job": job, "frames": attachments})
+            if path == "/api/asset-clip":
+                try:
+                    return self.send_json({"ok": True, **project.asset_clip(body.get("path", ""), body.get("duration", 3))})
+                except RuntimeError as e:
+                    return self.send_json({"error": str(e)}, 400)
             if path == "/api/claude/stop":
                 claude.stop()
                 return self.send_json({"ok": True})

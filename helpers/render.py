@@ -574,9 +574,15 @@ def caption_entries_from_cues(edl: dict, edit_dir: Path) -> list[tuple[float, fl
                 if not text:
                     continue
                 pos = c.get("pos") or default_pos
+                scale = float(c.get("scale") or caps.get("scale") or 1.0)
+                tags = ""
                 if pos:
                     x, y = float(pos[0]) * SRT_PLAY_RES[0], float(pos[1]) * SRT_PLAY_RES[1]
-                    text = f"{{\\an5\\pos({x:.0f},{y:.0f})}}" + text
+                    tags += f"\\an5\\pos({x:.0f},{y:.0f})"
+                if abs(scale - 1.0) > 1e-3:
+                    tags += f"\\fscx{scale * 100:.0f}\\fscy{scale * 100:.0f}"
+                if tags:
+                    text = "{" + tags + "}" + text
                 entries.append((a - rs + offset, b - rs + offset, text))
         offset += re_ - rs
     return entries
@@ -787,6 +793,22 @@ def apply_loudnorm_two_pass(
 # -------- Final compositing (Rule 1 + Rule 4) -------------------------------
 
 
+def probe_dims(video: Path) -> tuple[int, int]:
+    out = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height",
+         "-of", "csv=p=0", str(video)], capture_output=True, text=True, check=True).stdout
+    w, h = [int(v) for v in out.strip().split(",")[:2]]
+    return w, h
+
+
+def overlay_xy(ov: dict, base_dims: tuple[int, int]) -> str:
+    """x=..:y=..: for overlays placed with fractional x/y (top-left); '' keeps 0,0."""
+    if ov.get("x") is None and ov.get("y") is None:
+        return ""
+    bw, bh = base_dims
+    return f"x={round(float(ov.get('x') or 0) * bw)}:y={round(float(ov.get('y') or 0) * bh)}:"
+
+
 def build_final_composite(
     base_path: Path,
     overlays: list[dict],
@@ -800,6 +822,7 @@ def build_final_composite(
     If there are no overlays and no subtitles, just copy base to out.
     """
     has_overlays = bool(overlays)
+    base_dims = probe_dims(base_path) if any(ov.get("w") is not None or ov.get("x") is not None for ov in overlays) else (0, 0)
     has_subs = subtitles_path is not None and subtitles_path.exists()
 
     if not has_overlays and not has_subs:
@@ -816,7 +839,13 @@ def build_final_composite(
     # PTS-shift every overlay so its frame 0 lands at start_in_output
     for idx, ov in enumerate(overlays, start=1):
         t = float(ov["start_in_output"])
-        filter_parts.append(f"[{idx}:v]setpts=PTS-STARTPTS+{t}/TB[a{idx}]")
+        # optional placement: x/y = top-left, w = width, all as fractions of the output frame
+        place = ""
+        if ov.get("w") is not None:
+            bw, bh = base_dims
+            pw = max(2, int(round(float(ov["w"]) * bw / 2)) * 2)
+            place = f",scale={pw}:-2"
+        filter_parts.append(f"[{idx}:v]setpts=PTS-STARTPTS+{t}/TB{place}[a{idx}]")
 
     # Chain overlays on top of base
     current = "[0:v]"
@@ -826,7 +855,7 @@ def build_final_composite(
         end = t + dur
         next_label = f"[v{idx}]"
         filter_parts.append(
-            f"{current}[a{idx}]overlay=enable='between(t,{t:.3f},{end:.3f})'{next_label}"
+            f"{current}[a{idx}]overlay={overlay_xy(ov, base_dims)}enable='between(t,{t:.3f},{end:.3f})'{next_label}"
         )
         current = next_label
 
