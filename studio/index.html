@@ -103,6 +103,14 @@ kbd{font-family:ui-monospace,Menlo,monospace;font-size:10.5px;background:var(--p
 .cap:hover{outline-color:#ffffff66}
 .cap.sel{outline:2px solid var(--accent);outline-offset:3px}
 .cap.editing{cursor:text;outline:2px solid var(--blue);background:#0006}
+.xf{position:absolute;border:1.5px solid var(--accent);pointer-events:none;z-index:4;box-shadow:0 0 0 1px #0008}
+.xf.ov{pointer-events:auto;cursor:move;background:#ff6a1a0d}
+.xf i{position:absolute;width:11px;height:11px;margin:-6px 0 0 -6px;background:#fff;border:2px solid var(--accent);border-radius:2px;pointer-events:auto}
+.xf i[data-c="tl"]{left:0;top:0;cursor:nwse-resize}.xf i[data-c="tr"]{left:100%;top:0;cursor:nesw-resize}
+.xf i[data-c="bl"]{left:0;top:100%;cursor:nesw-resize}.xf i[data-c="br"]{left:100%;top:100%;cursor:nwse-resize}
+.xf b{position:absolute;left:0;top:-20px;font:600 10px Inter,sans-serif;background:var(--accent);color:#111;padding:1px 5px;border-radius:3px;white-space:nowrap}
+.stage video.ov.placed{inset:auto;height:auto;object-fit:fill}
+.mmenu .dd{left:0;right:auto;top:30px;bottom:auto}
 .guide{position:absolute;top:0;bottom:0;left:50%;width:1px;background:var(--accent);opacity:.8;pointer-events:none;z-index:2}
 .pin{position:absolute;width:22px;height:22px;margin:-11px 0 0 -11px;border:2px solid var(--accent);border-radius:50%;box-shadow:0 0 0 3px #0008;pointer-events:none}
 .pin::after{content:"";position:absolute;inset:6px;background:var(--accent);border-radius:50%}
@@ -230,7 +238,7 @@ kbd{font-family:ui-monospace,Menlo,monospace;font-size:10.5px;background:var(--p
       <label class="meta"><input type="checkbox" id="capToggle"> captions</label>
     </div>
     <div class="stage-wrap" id="stageWrap">
-      <div class="stage" id="stage"><div class="cap" id="cap"></div><div class="badge" id="gradeBadge"></div></div>
+      <div class="stage" id="stage"><div class="cap" id="cap"></div><div class="xf hidden" id="xf"><b id="xfl"></b><i data-c="tl"></i><i data-c="tr"></i><i data-c="bl"></i><i data-c="br"></i></div><div class="badge" id="gradeBadge"></div></div>
       <div class="rendered hidden" id="rendered"><video id="rvid" controls playsinline></video></div>
     </div>
     <div class="transport">
@@ -264,6 +272,17 @@ kbd{font-family:ui-monospace,Menlo,monospace;font-size:10.5px;background:var(--p
 
   <div class="tl" id="tl">
     <div class="tl-bar">
+      <div class="menu mmenu" id="motionMenu"><button class="ghost" id="motionBtn" title="Have Claude build a motion graphic (Remotion / HyperFrames) for the selection or playhead">✦ Motion ▾</button>
+        <div class="dd">
+          <button data-m="lower">Lower third<small>name + title, brand colours</small></button>
+          <button data-m="title">Title card<small>big text, 2–3s</small></button>
+          <button data-m="kinetic">Kinetic text<small>animate the selected words</small></button>
+          <button data-m="callout">Callout / arrow<small>points at where you clicked</small></button>
+          <button data-m="stat">Stat / counter<small>number that counts up</small></button>
+          <button data-m="logo">Logo sting<small>animated brand logo</small></button>
+          <button data-m="endcard">End card + CTA<small>last 3s</small></button>
+          <button data-m="custom">Custom…<small>describe it yourself</small></button>
+        </div></div>
       <button class="ghost" id="addCap" title="Add a caption at the playhead (T)">+ Caption</button><button class="ghost" id="resetCaps" title="Throw away caption edits and go back to auto captions from the transcript">↺ Auto captions</button>
       <span class="tool">captions: double-click to retype · drag on the frame (<kbd>⇧</kbd> moves all) · drag edges to retime · <kbd>T</kbd> new · <kbd>S</kbd> split · <kbd>⌫</kbd> delete · <kbd>I</kbd>/<kbd>O</kbd> mark range · drag edges to trim (snaps to words, <kbd>⌥</kbd> free) · drag clips to reorder · click the frame to point Claude at it</span>
       <span class="meta" id="tlinfo" style="white-space:nowrap"></span>
@@ -362,7 +381,7 @@ function derive() {
         const text = q.text != null ? String(q.text) : autoText(c.src, a, b);
         if (!text.trim()) return;
         S.cues.push({ a: a - c.s + c.off, b: b - c.s + c.off, text, qi, src: c.src, sa: a, sb: b, clip: c.i,
-          pos: q.pos || caps.pos || null, edited: q.text != null, moved: !!q.pos });
+          pos: q.pos || caps.pos || null, edited: q.text != null, moved: !!q.pos || !!q.scale, scale: +(q.scale || caps.scale || 1) });
       });
     }
     S.cues.sort((x, y) => x.a - y.a);
@@ -378,7 +397,7 @@ function derive() {
         if (!nx || /[.,!?;:]$/.test(w.t) || gap >= 0.3 || cur.length >= 3 || (cur.length >= 2 && dur >= 0.35)) {
           const sa = Math.max(c.s, cur[0].s), sb = Math.min(c.e, cur[cur.length - 1].e);
           S.cues.push({ a: sa - c.s + c.off, b: (sb > sa ? sb : sa + 0.4) - c.s + c.off, sa, sb, src: c.src, clip: c.i, qi: -1,
-            text: cur.map((x) => x.t).join(' ').replace(/[,;:]$/, '').toUpperCase(), pos: caps.pos || null, edited: false });
+            text: cur.map((x) => x.t).join(' ').replace(/[,;:]$/, '').toUpperCase(), pos: caps.pos || null, edited: false, scale: +(caps.scale || 1) });
           cur = [];
         }
       });
@@ -465,7 +484,7 @@ function mutate(fn, { rebuild = true } = {}) {
   return true;
 }
 function afterChange(rebuild = true) {
-  derive(); if (rebuild) buildPlayers(); renderAll(); seek(Math.min(S.out, Math.max(0, S.total - 0.01)));
+  derive(); if (rebuild) buildPlayers(); else ovPlayers.forEach((o) => { o.ov = S.edl.overlays[o.i] || o.ov; placeOverlay(o.el, o.ov); }); renderAll(); seek(Math.min(S.out, Math.max(0, S.total - 0.01)));
   scheduleSave();
 }
 function scheduleSave() {
@@ -625,8 +644,9 @@ function buildPlayers() {
   (S.edl.overlays || []).forEach((ov, i) => {
     const v = document.createElement('video');
     v.className = 'ov'; v.muted = true; v.preload = 'auto'; v.playsInline = true;
-    v.src = '/overlay?path=' + encodeURIComponent(ov.file) + '&token=' + TOKEN;
-    stage.insertBefore(v, $('cap')); ovPlayers.push({ el: v, ov, i });
+    v.src = '/overlay?path=' + encodeURIComponent(ov.file) + '&token=' + TOKEN + '&b=' + (S.ovBust || 0);
+    v.addEventListener('loadedmetadata', () => placeOverlay(v, ov));
+    stage.insertBefore(v, $('cap')); ovPlayers.push({ el: v, ov, i }); placeOverlay(v, ov);
   });
   sizeStage();
   const g = S.edl.grade || 'none';
@@ -643,12 +663,28 @@ function sizeStage() {
   const st = $('stage'); st.style.width = w + 'px'; st.style.height = h + 'px';
   applyCapStyle(h);
 }
+// Output frame render.py produces (final/preview): long edge 1920, source aspect.
+function outDims() {
+  const m = S.clips[0] && S.media[S.clips[0].src]; const ar = m ? m.width / m.height : 16 / 9;
+  return ar >= 1 ? [1920, 1920 / ar] : [1920 * ar, 1920];
+}
+// Mirror render.py: x/y/w fractions → placed; otherwise native pixels at 0,0.
+function placeOverlay(el, ov) {
+  el.classList.add('placed');
+  if (ov.w != null || ov.x != null || ov.y != null) {
+    el.style.left = ((+ov.x || 0) * 100) + '%'; el.style.top = ((+ov.y || 0) * 100) + '%';
+    el.style.width = ov.w != null ? (+ov.w * 100) + '%' : (el.videoWidth ? (el.videoWidth / outDims()[0] * 100) + '%' : '100%');
+  } else {
+    el.style.left = '0'; el.style.top = '0';
+    el.style.width = el.videoWidth ? (el.videoWidth / outDims()[0] * 100) + '%' : '100%';
+  }
+}
 function applyCapStyle(h) {
   // ASS script space is 288 units tall (render.py / libass), so scale everything by h/288
   const st = S.capstyle || {}, u = h / 288, cap = $('cap');
   cap.style.fontFamily = `"${st.FontName || 'Helvetica'}", Helvetica, Arial, sans-serif`;
   // libass sizes a font by its full line height (ascent+descent); CSS by its em box (~1.15× smaller)
-  cap.style.fontSize = (+(st.FontSize || 20) * u * 0.87) + 'px'; cap.style.lineHeight = '1.15';
+  S.capFont = +(st.FontSize || 20) * u * 0.87; cap.style.fontSize = S.capFont + 'px'; cap.style.lineHeight = '1.15';
   cap.style.fontWeight = st.Bold === '0' ? '400' : '800';
   cap.style.color = assColor(st.PrimaryColour, '#fff');
   const boxed = st.BorderStyle === '3';
@@ -713,11 +749,13 @@ function drawStage() {
       if (S.playing && el.paused) el.play().catch(() => {}); if (!S.playing && !el.paused) el.pause();
     } else if (!el.paused) el.pause();
   });
+  updateXf();
   // captions
   const cue = S.showCaps ? S.cues.find((q) => S.out >= q.a && S.out < q.b) : null;
   if (cue !== lastCue && !capEditing) {
     const cap = $('cap'); cap.textContent = cue ? cue.text : ''; lastCue = cue;
     if (cue) {
+      cap.style.fontSize = ((S.capFont || 16) * (cue.scale || 1)) + 'px';
       if (cue.pos) { cap.style.left = (cue.pos[0] * 100) + '%'; cap.style.top = (cue.pos[1] * 100) + '%'; cap.style.bottom = 'auto'; cap.style.transform = 'translate(-50%,-50%)'; }
       else { cap.style.left = '50%'; cap.style.top = 'auto'; cap.style.bottom = (S.capBottom ?? 48) + 'px'; cap.style.transform = 'translateX(-50%)'; }
       const sc = selCue(); cap.classList.toggle('sel', !!sc && sc.k === cue.k);
@@ -1039,6 +1077,109 @@ $('zoom').addEventListener('input', (e) => { S.pps = 4 * Math.pow(80, e.target.v
 // ---------------------------------------------------------------------------
 // Monitor: click the frame to point Claude at it
 // ---------------------------------------------------------------------------
+// ---- transform box: move/resize graphics (V2 overlays) and captions on the frame ----
+function xfTarget() {
+  const dc = selCue();
+  if (dc && lastCue && lastCue.k === dc.k && !capEditing) return { kind: 'cap', d: dc, el: $('cap') };
+  if (S.sel.overlays.size === 1 && !S.sel.clips.size) {
+    const i = [...S.sel.overlays][0], p = ovPlayers.find((o) => o.i === i);
+    if (p && p.el.classList.contains('on')) return { kind: 'ov', i, el: p.el, ov: S.edl.overlays[i] };
+  }
+  return null;
+}
+let xfDrag = null;
+function updateXf() {
+  const box = $('xf'), t = xfDrag ? xfDrag.t : xfTarget();
+  if (!t || S.monitor !== 'live') { box.classList.add('hidden'); return; }
+  const st = $('stage').getBoundingClientRect(), r = t.el.getBoundingClientRect();
+  box.classList.remove('hidden'); box.classList.toggle('ov', t.kind === 'ov');
+  box.style.left = (r.left - st.left) + 'px'; box.style.top = (r.top - st.top) + 'px';
+  box.style.width = r.width + 'px'; box.style.height = r.height + 'px';
+  $('xfl').textContent = t.kind === 'cap' ? `caption ${Math.round((t.d.scale || 1) * 100)}%` : `graphic ${Math.round((t.ov.w ?? (r.width / st.width)) * 100)}% wide`;
+}
+// Give an un-placed overlay explicit x/y/w from its native size (same as render.py's 0,0 native placement).
+function materializeOv(ov, el) {
+  if (ov.w != null) return;
+  const nw = el.videoWidth || outDims()[0];
+  ov.x = +ov.x || 0; ov.y = +ov.y || 0; ov.w = r3(nw / outDims()[0]);
+}
+function hitOverlay(clientX, clientY) {
+  for (let k = ovPlayers.length - 1; k >= 0; k--) {
+    const { el, i } = ovPlayers[k], ov = S.edl.overlays[i];
+    if (!el.classList.contains('on') || !ov || ov.w == null) continue; // full-frame/native ones: select them on V2
+    const r = el.getBoundingClientRect();
+    if (clientX >= r.left && clientX <= r.right && clientY >= r.top && clientY <= r.bottom) return i;
+  }
+  return -1;
+}
+function startXf(e, t, corner) {
+  if (S.claudeBusy) { toast('Claude is editing — hold on a sec'); return; }
+  e.preventDefault(); e.stopPropagation(); pause(); S.suppressClick = true;
+  const st = $('stage').getBoundingClientRect(), r = t.el.getBoundingClientRect();
+  const snapshot = JSON.stringify(S.edl), x0 = e.clientX, y0 = e.clientY; let moved = false;
+  const fx = (cx) => (cx - st.left) / st.width, fy = (cy) => (cy - st.top) / st.height;
+  xfDrag = { t };
+  let o0 = null, ar = 1, cap0 = null;
+  if (t.kind === 'ov') {
+    materializeOv(t.ov, t.el);
+    o0 = { x: +t.ov.x, y: +t.ov.y, w: +t.ov.w };
+    ar = (t.el.videoWidth && t.el.videoHeight) ? t.el.videoWidth / t.el.videoHeight : r.width / r.height; // clip aspect
+  } else {
+    cap0 = { cx: r.left + r.width / 2, cy: r.top + r.height / 2, scale: t.d.scale || 1 };
+    cap0.dist = Math.hypot(x0 - cap0.cx, y0 - cap0.cy) || 1;
+  }
+  const frameAR = st.width / st.height;
+  const mv = (ev) => {
+    if (!moved && Math.hypot(ev.clientX - x0, ev.clientY - y0) < 2) return;
+    moved = true;
+    if (t.kind === 'cap') {
+      const sc = clamp(cap0.scale * Math.hypot(ev.clientX - cap0.cx, ev.clientY - cap0.cy) / cap0.dist, 0.3, 5);
+      t.d.scale = sc; $('cap').style.fontSize = ((S.capFont || 16) * sc) + 'px'; return;
+    }
+    const ov = t.ov;
+    if (!corner) { ov.x = r3(o0.x + fx(ev.clientX) - fx(x0)); ov.y = r3(o0.y + fy(ev.clientY) - fy(y0)); }
+    else {
+      const h0 = o0.w * frameAR / ar, left = corner.includes('l'), top = corner.includes('t');
+      const ax = left ? o0.x + o0.w : o0.x, ay = top ? o0.y + h0 : o0.y;          // opposite corner stays put
+      const w = clamp(Math.max(Math.abs(fx(ev.clientX) - ax), Math.abs(fy(ev.clientY) - ay) * ar / frameAR), 0.02, 3);
+      const h = w * frameAR / ar;
+      ov.w = r3(w); ov.x = r3(left ? ax - w : ax); ov.y = r3(top ? ay - h : ay);
+    }
+    placeOverlay(t.el, ov);
+  };
+  const up = (ev) => {
+    window.removeEventListener('mousemove', mv); window.removeEventListener('mouseup', up);
+    xfDrag = null; setTimeout(() => (S.suppressClick = false), 0);
+    if (!moved) { S.edl = JSON.parse(snapshot); return; }
+    if (t.kind === 'cap') {
+      const sc = r3(t.d.scale), qi = cueIndex(t.d), all = ev.shiftKey;
+      S.edl = JSON.parse(snapshot);
+      mutate((edl) => { const cues = ensureCues(edl); if (all) { edl.captions.scale = sc; cues.forEach((q) => delete q.scale); } else cues[qi].scale = sc; });
+      S.sel.cue = { qi, a: t.d.a }; renderAll();
+      toast(all ? `All captions ${Math.round(sc * 100)}%` : `Caption ${Math.round(sc * 100)}% · ⇧-drag a corner to resize all`);
+    } else {
+      const after = { ...t.ov }; S.edl = JSON.parse(snapshot);
+      mutate((edl) => { Object.assign(edl.overlays[t.i], { x: after.x, y: after.y, w: after.w }); }, { rebuild: false });
+      S.sel.overlays = new Set([t.i]);
+    }
+  };
+  window.addEventListener('mousemove', mv); window.addEventListener('mouseup', up);
+}
+$('xf').addEventListener('mousedown', (e) => {
+  const t = xfTarget(); if (!t) return;
+  const corner = e.target.dataset?.c || null;
+  if (!corner && t.kind === 'cap') return; // caption body drag is handled by the caption itself
+  startXf(e, t, corner);
+});
+$('stage').addEventListener('mousedown', (e) => {
+  if (e.target.closest('#cap,#xf')) return;
+  const i = hitOverlay(e.clientX, e.clientY); if (i < 0) return;
+  S.sel = { clips: new Set(), overlays: new Set([i]), words: null, range: null, pin: null, assets: new Set(), cue: null };
+  renderAll(); drawPin();
+  const p = ovPlayers.find((o) => o.i === i);
+  startXf(e, { kind: 'ov', i, el: p.el, ov: S.edl.overlays[i] }, null);
+});
+
 function editCap() {
   const d = selCue() || lastCue; if (!d) return;
   pause(); const cap = $('cap'); capEditing = true;
@@ -1141,6 +1282,7 @@ function renderInspector() {
       <div class="field"><label>End (source s)</label><input type="number" step="0.01" data-c="end" value="${num(dcue.sb)}"></div></div>
       <div class="row"><div class="field"><label>X % (centre)</label><input type="number" step="1" data-c="x" value="${dcue.pos ? Math.round(dcue.pos[0] * 100) : ''}" placeholder="auto"></div>
       <div class="field"><label>Y %</label><input type="number" step="1" data-c="y" value="${dcue.pos ? Math.round(dcue.pos[1] * 100) : ''}" placeholder="auto"></div></div>
+      <div class="row"><div class="field"><label>Size %</label><input type="number" step="5" data-c="scale" value="${Math.round((dcue.scale || 1) * 100)}"></div><div></div></div>
       <div class="row"><button data-ca="all">Use this position for all</button><button data-ca="resetpos">Reset position</button></div>
       ${dcue.edited ? '<button data-ca="autotext">Back to transcript words</button>' : ''}
       <div class="meta">Font ${esc(cs.FontName || 'Helvetica')} · size ${esc(cs.FontSize || '20')} · from ${S.brand ? 'the brand style.json' : 'the default style'}. Change those for the whole brand in style.json, or ask Claude.</div>`;
@@ -1158,7 +1300,12 @@ function renderInspector() {
     h += `<h4>Overlay ${oi + 1}</h4>
       <div class="field"><label>File</label><input data-o="file" value="${esc(o.file)}"></div>
       <div class="row"><div class="field"><label>Start (output s)</label><input type="number" step="0.01" data-o="start_in_output" value="${num(o.start_in_output)}"></div>
-      <div class="field"><label>Duration</label><input type="number" step="0.01" data-o="duration" value="${num(o.duration)}"></div></div>`;
+      <div class="field"><label>Duration</label><input type="number" step="0.01" data-o="duration" value="${num(o.duration)}"></div></div>
+      <div class="row"><div class="field"><label>X %</label><input type="number" step="0.5" data-op="x" value="${o.x != null ? Math.round(o.x * 1000) / 10 : ''}" placeholder="0"></div>
+      <div class="field"><label>Y %</label><input type="number" step="0.5" data-op="y" value="${o.y != null ? Math.round(o.y * 1000) / 10 : ''}" placeholder="0"></div>
+      <div class="field"><label>Width %</label><input type="number" step="0.5" data-op="w" value="${o.w != null ? Math.round(o.w * 1000) / 10 : ''}" placeholder="native"></div></div>
+      <div class="row"><button data-oa="full">Full frame</button><button data-oa="center">Centre</button><button data-oa="native">Native size</button></div>
+      <div class="meta">Drag the graphic on the frame to move it; drag a corner to resize.${/animations\/slot_/.test(o.file) ? ' This one has a source project — select it and ask Claude to change it.' : ''}</div>`;
   } else {
     h += `<div class="meta">Select a clip or overlay to edit its fields.</div>`;
   }
@@ -1179,6 +1326,7 @@ function renderInspector() {
         const q = ensureCues(edl)[qi];
         if (f === 'start') q.start = r3(Math.min(+inp.value, +q.end - 0.1));
         if (f === 'end') q.end = r3(Math.max(+inp.value, +q.start + 0.1));
+        if (f === 'scale') q.scale = r3(clamp((+inp.value || 100) / 100, 0.3, 5));
         if (f === 'x' || f === 'y') {
           const cur = q.pos || edl.captions.pos || [0.5, 0.8];
           const v = clamp((+inp.value || 0) / 100, 0, 1);
@@ -1200,6 +1348,21 @@ function renderInspector() {
   }
   el.querySelectorAll('[data-f]').forEach((inp) => inp.addEventListener('change', () => {
     const f = inp.dataset.f; mutate((edl) => { const r = edl.ranges[ci]; r[f] = inp.type === 'number' ? r3(+inp.value) : inp.value; if (r.end <= r.start) r.end = r3(r.start + 0.1); });
+  }));
+  el.querySelectorAll('[data-op]').forEach((inp) => inp.addEventListener('change', () => {
+    const f = inp.dataset.op, v = inp.value === '' ? null : r3(+inp.value / 100);
+    mutate((edl) => { const o = edl.overlays[oi]; if (v == null) delete o[f]; else o[f] = v; }, { rebuild: false });
+  }));
+  el.querySelectorAll('[data-oa]').forEach((b) => b.addEventListener('click', () => {
+    const a = b.dataset.oa, p = ovPlayers.find((x) => x.i === oi);
+    mutate((edl) => {
+      const o = edl.overlays[oi];
+      if (a === 'native') { delete o.x; delete o.y; delete o.w; return; }
+      if (a === 'full') { o.x = 0; o.y = 0; o.w = 1; return; }
+      if (p) materializeOv(o, p.el);
+      const st = $('stage').getBoundingClientRect(), ar = p && p.el.videoWidth ? p.el.videoWidth / p.el.videoHeight : 16 / 9;
+      const h = o.w * (st.width / st.height) / ar; o.x = r3((1 - o.w) / 2); o.y = r3((1 - h) / 2);
+    }, { rebuild: false });
   }));
   el.querySelectorAll('[data-o]').forEach((inp) => inp.addEventListener('change', () => {
     const f = inp.dataset.o; mutate((edl) => { edl.overlays[oi][f] = inp.type === 'number' ? r3(+inp.value) : inp.value; });
@@ -1237,7 +1400,9 @@ function renderChips() {
     if (c.k === 'words') S.sel.words = null; if (c.k === 'range') S.sel.range = null; if (c.k === 'pin') S.sel.pin = null; if (c.k === 'asset') S.sel.assets.delete(c.p); if (c.k === 'cue') S.sel.cue = null;
     renderAll(); drawPin();
   }));
-  const sug = chips.length ? (selCue() ? ['Highlight the key word in our accent colour', 'Split this into two lines', 'Make all captions this position', 'Fix caption timing for this clip']
+  const selOv = S.sel.overlays.size === 1 ? S.edl.overlays[[...S.sel.overlays][0]] : null;
+  const sug = chips.length ? (selOv && /animations\/slot_/.test(selOv.file) ? ['Change the text on this graphic', 'Make it snappier — faster in and out', 'Restyle it to our brand', 'Re-time it to the selected words']
+    : selOv ? ['Animate this in and out', 'Add a subtle drop shadow', 'Make it follow the speaker', 'Fade it over 0.3s'] : selCue() ? ['Highlight the key word in our accent colour', 'Split this into two lines', 'Make all captions this position', 'Fix caption timing for this clip']
     : S.sel.assets.size && !S.sel.clips.size && !S.sel.words && !S.sel.pin ? ['Put this in the corner for the whole video', 'Use this as the end card (3s)', 'Show this full-screen over the selected clip', 'Add this as background music, ducked under speech']
     : S.sel.pin ? ['Add a lower-third here', 'Punch in on this', 'Add a text callout pointing here', 'What do you see in this frame?']
     : S.sel.words ? ['Cut this', 'Emphasize these words in the captions', 'Add a title card on this line', 'Find a cleaner take of this line']
@@ -1255,7 +1420,12 @@ function selectionText() {
     const c = S.clips[i]; if (!c) return;
     L.push(`Selected clip ${i + 1} (edl.ranges[${i}]): output ${c.off.toFixed(2)}–${(c.off + c.dur).toFixed(2)}s, source ${c.src} ${c.s.toFixed(2)}–${c.e.toFixed(2)}s, beat "${c.r.beat || ''}". Spoken: "${wtext(c.src, c.s, c.e)}"`);
   });
-  [...s.overlays].forEach((i) => { const o = S.edl.overlays[i]; L.push(`Selected overlay ${i + 1} (edl.overlays[${i}]): ${o.file}, output ${(+o.start_in_output).toFixed(2)}s for ${(+o.duration).toFixed(2)}s`); });
+  [...s.overlays].forEach((i) => {
+    const o = S.edl.overlays[i]; const slot = /(animations\/slot_[^/]+)/.exec(o.file);
+    L.push(`Selected overlay ${i + 1} (edl.overlays[${i}]): ${o.file}, output ${(+o.start_in_output).toFixed(2)}s for ${(+o.duration).toFixed(2)}s` +
+      (o.w != null ? `, placed x=${o.x} y=${o.y} w=${o.w} (frame fractions)` : ', native size at 0,0') +
+      (slot ? `. Source project: edit/${slot[1]}/ — edit it there and re-render to the same file.` : ''));
+  });
   if (s.words) {
     const ws = selectedWords();
     if (ws.length) {
@@ -1324,6 +1494,7 @@ function onClaude(ev) {
     if (ev.cost) { const mm = document.createElement('div'); mm.className = 'meta'; mm.textContent = `${(ev.duration_ms / 1000).toFixed(1)}s · $${ev.cost.toFixed(3)}`; chat.appendChild(mm); }
     streamEl = null; S.sel.pin = null; renderChips(); drawPin();
     refreshBin(true);
+    S.ovBust = Date.now(); buildPlayers(); renderTimeline();
   }
   chat.scrollTop = chat.scrollHeight;
 }
@@ -1372,6 +1543,36 @@ function setMonitor(m) {
   } else $('rvid').pause();
 }
 $('mtLive').onclick = () => setMonitor('live'); $('mtRender').onclick = () => setMonitor('render');
+// ---- Motion graphics: prefill a brief for Claude from the current selection ----
+function selectionWindow() {
+  const s = S.sel;
+  if (s.range) return { a: s.range.a, b: s.range.b };
+  const ws = selectedWords();
+  if (ws.length) { const f = ws[0], l = ws[ws.length - 1], cf = S.clips[f.c], cl = S.clips[l.c];
+    return { a: cf.off + f.w.s - cf.s, b: cl.off + l.w.e - cl.s, words: ws.map((x) => x.w.t).join(' ') }; }
+  if (s.clips.size === 1) { const c = S.clips[[...s.clips][0]]; return { a: c.off, b: c.off + c.dur }; }
+  const dc = selCue(); if (dc) return { a: dc.a, b: dc.b, words: dc.text };
+  return { a: S.out, b: Math.min(S.total, S.out + 4) };
+}
+const MOTION = {
+  lower: (w) => `Make an animated lower-third (name + title) from ${w.a.toFixed(2)}s to ${w.b.toFixed(2)}s. Name: [NAME], title: [TITLE].`,
+  title: (w) => `Make an animated title card${w.words ? ` that says "${w.words}"` : ''} from ${w.a.toFixed(2)}s, about ${Math.max(2, Math.min(3, w.b - w.a)).toFixed(1)}s long.`,
+  kinetic: (w) => `Make kinetic typography for ${w.words ? `"${w.words}"` : 'the line being spoken'} from ${w.a.toFixed(2)}s to ${w.b.toFixed(2)}s, each word landing on its spoken timestamp (transcript timing).`,
+  callout: (w) => `Make an animated callout/arrow ${S.sel.pin ? `pointing at the spot I clicked (x ${Math.round(S.sel.pin.x * 100)}%, y ${Math.round(S.sel.pin.y * 100)}%)` : 'pointing at [WHAT]'} from ${w.a.toFixed(2)}s for ~3s, with a short label: [LABEL].`,
+  stat: (w) => `Make an animated stat that counts up to [NUMBER] with the label [LABEL], from ${w.a.toFixed(2)}s for ~3s.`,
+  logo: (w) => `Make a short animated logo sting (1.5–2s) from our brand logo, starting at ${w.a.toFixed(2)}s.`,
+  endcard: () => `Make a 3s end card with our logo and the CTA [CTA TEXT] for the last 3 seconds of the video (${Math.max(0, S.total - 3).toFixed(2)}s).`,
+  custom: (w) => `Make a motion graphic from ${w.a.toFixed(2)}s to ${w.b.toFixed(2)}s: [DESCRIBE IT].`,
+};
+$('motionBtn').onclick = (e) => { e.stopPropagation(); $('motionMenu').classList.toggle('open'); };
+window.addEventListener('click', () => $('motionMenu').classList.remove('open'));
+$('motionMenu').querySelectorAll('[data-m]').forEach((b) => b.addEventListener('click', () => {
+  const w = selectionWindow();
+  $('prompt').value = MOTION[b.dataset.m](w) +
+    ' Use our brand colours and fonts (brand.md). Build it with Remotion or HyperFrames in its own animations slot, transparent background, then add it to the timeline as an overlay.';
+  $('prompt').focus();
+  const m = /\[[A-Z ]+\]/.exec($('prompt').value); if (m) $('prompt').setSelectionRange(m.index, m.index + m[0].length);
+}));
 $('addCap').onclick = addCaptionAtPlayhead;
 $('resetCaps').onclick = resetCaptions;
 $('capToggle').onchange = (e) => { S.showCaps = e.target.checked; renderTimeline(); drawStage(); };
@@ -1427,12 +1628,32 @@ async function refreshBin(markNew) {
   if (!Array.isArray(r)) return;
   S.bin = r; renderBin(markNew ? before : null);
 }
+async function addAssetToTimeline(pth) {
+  if (S.claudeBusy) return toast('Claude is editing — hold on a sec');
+  const a = S.bin.find((x) => x.path === pth); if (!a || !['image', 'video'].includes(a.kind)) return toast('Only images and videos go on the timeline');
+  const start = S.sel.range ? S.sel.range.a : S.out, dur = S.sel.range ? S.sel.range.b - S.sel.range.a : 3;
+  toast('Placing ' + a.name + '…');
+  const r = await api('/api/asset-clip', { path: pth, duration: dur });
+  if (!r.ok) return toast(r.error || 'Could not place that asset');
+  const [W, H] = outDims(), w = Math.min(0.4, r.w / W), h = w * W / H * (r.h / r.w);
+  let idx = -1;
+  mutate((edl) => {
+    edl.overlays = edl.overlays || [];
+    edl.overlays.push({ file: r.file, start_in_output: r3(start), duration: r3(a.kind === 'video' ? Math.min(r.duration || dur, S.total - start) : dur),
+      x: r3((1 - w) / 2), y: r3((1 - h) / 2), w: r3(w) });
+    idx = edl.overlays.length - 1;
+  });
+  S.sel = { clips: new Set(), overlays: new Set([idx]), words: null, range: null, pin: null, assets: new Set(), cue: null };
+  pause(); seek(start + 0.05); renderAll();
+  toast('Added to V2 — drag it on the frame, corners resize');
+}
 function assetUrl(a) { return (a.kind === 'video' ? '/overlay' : '/file') + '?path=' + encodeURIComponent(a.path) + '&token=' + TOKEN + '&v=' + a.mtime; }
 function renderBin(before) {
   const el = $('bin'); if (!el) return;
   const apps = S.apps.length ? S.apps.map((n) => `<span class="chip"><span>${esc(n)}</span></span>`).join('') : '<span class="meta">No apps configured — run the video-use-setup skill.</span>';
   let h = `<div class="apps"><span class="meta">Apps</span>${apps}</div>
-    <div class="row" style="gap:6px"><button id="binImport">✦ Import from an app…</button><button class="ghost" id="binRefresh" title="Refresh">↻</button></div>`;
+    <div class="row" style="gap:6px"><button id="binImport">✦ Import from an app…</button><button class="ghost" id="binRefresh" title="Refresh">↻</button></div>
+    <div class="meta" style="margin-top:6px">Double-click an image or video to drop it on V2 at the playhead, then drag/resize it on the frame.</div>`;
   const groups = [['assets', 'This edit (edit/assets)'], ['brand', 'Brand kit (client brand/)']];
   for (const [g, title] of groups) {
     const items = S.bin.filter((a) => a.group === g);
@@ -1447,6 +1668,7 @@ function renderBin(before) {
     }).join('') + '</div>';
   }
   el.innerHTML = h;
+  el.querySelectorAll('.tile').forEach((t) => t.addEventListener('dblclick', () => addAssetToTimeline(t.dataset.p)));
   el.querySelectorAll('.tile').forEach((t) => t.addEventListener('click', (e) => {
     const pth = t.dataset.p;
     if (!(e.shiftKey || e.metaKey)) S.sel.assets = new Set(S.sel.assets.has(pth) && S.sel.assets.size === 1 ? [] : [pth]);
