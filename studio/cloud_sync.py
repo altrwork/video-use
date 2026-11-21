@@ -102,7 +102,7 @@ class Companion:
             if not (self.p.wave_path(n).exists() and self.p.thumbs_meta_path(n).exists()):
                 self.p._build_assets(n)
         d = {"media": {n: self.p.probe(n) for n in names}, "assets": {n: self.p.assets(n) for n in names},
-             "capstyle": self.p.caption_style(), "bin": self.p.assets_bin(),
+             "capstyle": self.p.caption_style(), "bin": self.p.assets_bin(), "grades": self.grades(),
              "brand": str(self.p.client_root / "brand.md") if self.p.client_root else None,
              "notes:context": self.p.read_notes("context"), "notes:prefs": self.p.read_notes("prefs"),
              "renders": {k: (int((self.p.edit_dir / f).stat().st_mtime) if (self.p.edit_dir / f).exists() else 0)
@@ -110,6 +110,17 @@ class Companion:
         for n in names:
             d["transcript:" + n] = self.p.transcript(n)
         return d
+
+    def grades(self) -> list[str]:
+        """Grade names a cloud edit may set: 'auto' plus the presets in helpers/grade.py."""
+        names = ["auto"]
+        try:
+            src = (self.p.video_use_dir / "helpers" / "grade.py").read_text()
+            block = re.search(r"^PRESETS[^=]*=\s*\{(.*?)^\}", src, re.S | re.M)
+            names += re.findall(r'^\s*"([a-z0-9_]+)"\s*:', block.group(1), re.M) if block else []
+        except Exception:
+            pass
+        return names
 
     def proxy(self, name: str) -> Path | None:
         src = self.p.source_path(name)
@@ -202,12 +213,15 @@ class Companion:
         ch = edl_hash(cloud_edl)
         if ch != lh:
             local_changed, cloud_changed = lh != self.state.get("hash"), rev != self.state.get("rev")
-            if cloud_changed and not local_changed:
+            why = self.unsafe_edl(cloud_edl) if (cloud_changed and not local_changed) else None
+            if why:
+                log(f"did not pull the cloud timeline: {why}")
+            if cloud_changed and not local_changed and not why:
                 self.p.write_edl(cloud_edl)
                 lh = ch
                 log(f"pulled the cloud timeline (rev {rev})")
             else:
-                keep = f"cloud before sync {time.strftime('%Y-%m-%d %H:%M')}" if cloud_changed else None
+                keep = f"cloud before sync {time.strftime('%Y-%m-%d %H:%M')}" if (cloud_changed or why) else None
                 rev = self.publish(edl_push=local, keep_cloud_as=keep)["rev"]
                 log("pushed the local timeline" + (f"; the cloud version was kept as “{keep}”" if keep else ""))
         self.state.update(hash=lh, rev=rev)
@@ -273,25 +287,72 @@ class Companion:
 
     def unsafe_edl(self, edl: dict) -> str | None:
         """The cloud can be driven by anyone signed in (and by Claude). This machine renders the EDL with
-        ffmpeg, so never accept file paths or filter strings from there that reach outside the project."""
+        ffmpeg, so never accept file paths, filter strings or unknown fields from there. Returns why, or None."""
         local = self.p.read_edl()
         if not isinstance(edl, dict) or not isinstance(edl.get("ranges"), list):
             return "not a timeline"
+        dumps = lambda v: json.dumps(v, sort_keys=True)
+        num = lambda v, lo, hi: isinstance(v, (int, float)) and not isinstance(v, bool) and lo <= v <= hi
+        text = lambda v, n: isinstance(v, str) and len(v) <= n and not re.search(r"[\x00-\x09\x0b-\x1f\x7f]", v)
+        pos = lambda v: isinstance(v, list) and len(v) == 2 and num(v[0], -1, 2) and num(v[1], -1, 2)
         for k in set(local) | set(edl):
             if k in ("ranges", "overlays", "captions", "grade", "total_duration_s"):
                 continue
-            if json.dumps(local.get(k), sort_keys=True) != json.dumps(edl.get(k), sort_keys=True):
+            if dumps(local.get(k)) != dumps(edl.get(k)):
                 return f'"{k}" can only be changed on this computer'
         g = edl.get("grade")
-        if g != local.get("grade") and g is not None and not (isinstance(g, str) and re.fullmatch(r"[a-z0-9_]{1,40}", g)):
-            return "grade must be a preset name"
+        if g != local.get("grade") and g is not None and g not in self.grades():
+            return "grade must be a known preset name"
+        had = lambda items: {dumps(x) for x in (items or [])}
+        old_r, old_o = had(local.get("ranges")), had(local.get("overlays"))
+        old_c = had((local.get("captions") or {}).get("cues"))
+        sources = local.get("sources") or {}
         for r in edl["ranges"]:
-            if not isinstance(r, dict) or r.get("source") not in (local.get("sources") or {}):
+            if not isinstance(r, dict) or r.get("source") not in sources:
                 return "a clip uses an unknown source"
-        for ov in edl.get("overlays") or []:
+            if dumps(r) in old_r:
+                continue
+            if set(r) - {"source", "start", "end", "beat", "quote", "reason", "mute"}:
+                return "a clip has a field that is not allowed"
+            if not (num(r.get("start"), 0, 1e6) and num(r.get("end"), 0, 1e6) and r["end"] > r["start"]):
+                return "a clip has bad times"
+            if any(r.get(k) is not None and not text(r[k], 2000) for k in ("beat", "quote", "reason")) or not isinstance(r.get("mute", False), bool):
+                return "a clip has a bad text field"
+        overlays = edl.get("overlays") or []
+        if not isinstance(overlays, list):
+            return "overlays must be a list"
+        for ov in overlays:
             f = ov.get("file") if isinstance(ov, dict) else None
             if not isinstance(f, str) or not self.p.resolve_any(f):
                 return f"graphic file is not inside this project: {str(f)[:80]}"
+            if dumps(ov) in old_o:
+                continue
+            if set(ov) - {"file", "start_in_output", "duration", "x", "y", "w"}:
+                return "a graphic has a field that is not allowed"
+            if not (num(ov.get("start_in_output"), 0, 1e6) and num(ov.get("duration"), 0.01, 1e6)):
+                return "a graphic has bad times"
+            if any(ov.get(k) is not None and not num(ov[k], -5, 5) for k in ("x", "y")) or (ov.get("w") is not None and not num(ov["w"], 0.005, 10)):
+                return "a graphic has a bad position or size"
+        c = edl.get("captions")
+        if c is not None and dumps(c) != dumps(local.get("captions")):
+            if not isinstance(c, dict) or set(c) - {"pos", "scale", "cues"}:
+                return "captions has a field that is not allowed"
+            if (c.get("pos") is not None and not pos(c["pos"])) or (c.get("scale") is not None and not num(c["scale"], 0.1, 10)):
+                return "captions has a bad position or size"
+            if not isinstance(c.get("cues", []), list):
+                return "captions.cues must be a list"
+            for q in c.get("cues", []):
+                if not isinstance(q, dict) or q.get("source") not in sources:
+                    return "a caption uses an unknown source"
+                if dumps(q) in old_c:
+                    continue
+                if set(q) - {"source", "start", "end", "text", "pos", "scale"}:
+                    return "a caption has a field that is not allowed"
+                if not (num(q.get("start"), 0, 1e6) and num(q.get("end"), 0, 1e6) and q["end"] > q["start"]):
+                    return "a caption has bad times"
+                if (q.get("text") is not None and not text(q["text"], 1000)) or (q.get("pos") is not None and not pos(q["pos"])) \
+                        or (q.get("scale") is not None and not num(q["scale"], 0.1, 10)):
+                    return "a caption has a bad text, position or size"
         return None
 
     def sync_overlays(self):
