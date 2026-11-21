@@ -111,6 +111,28 @@ class Project:
                 return c
         return None
 
+    def caption_style(self) -> dict:
+        """The subtitle force_style render.py will use (style.json chain →
+        default), as a dict, so the preview draws captions the same way."""
+        style = ""
+        vu = self.video_use_dir
+        if vu and (vu / "helpers" / "render.py").exists():
+            try:
+                if str(vu / "helpers") not in sys.path:
+                    sys.path.insert(0, str(vu / "helpers"))
+                import render as vu_render  # type: ignore
+                import contextlib, io
+                with contextlib.redirect_stdout(io.StringIO()):
+                    style = vu_render.load_subtitle_style(self.edit_dir)
+            except Exception as e:
+                print(f"[studio] caption style: {e}", file=sys.stderr)
+        out = {}
+        for part in style.split(","):
+            if "=" in part:
+                k, v = part.split("=", 1)
+                out[k.strip()] = v.strip()
+        return out
+
     def assets_bin(self) -> list[dict]:
         """Media the user can point Claude at: edit/assets/ (pulled from apps,
         generated) and the client's brand/ folder."""
@@ -428,7 +450,13 @@ How the EDL maps to the timeline
 - Clips are edl.ranges in order, numbered 1..N in the UI. Output time of clip i starts at the sum of (end-start) of clips before it.
 - Overlays (edl.overlays: {{file, start_in_output, duration}}) are in OUTPUT time. Paths resolve relative to the edit dir.
 - Keep the schema render.py-compatible: sources, ranges[{{source,start,end,beat,quote,reason}}], grade, overlays, subtitles.
-- Captions: the studio previews captions from transcripts when edl.subtitles is set; render uses --build-subtitles or the SRT path.
+- Captions (shown when edl.subtitles is set). Two modes:
+  - auto: no edl.captions.cues → render.py chunks the transcript (~2 words, UPPERCASE).
+  - edited: edl.captions = {{"pos": [x,y]?, "cues": [{{"source", "start", "end", "text"?, "pos"?}}]}}. Cue times are SOURCE time
+    (they follow their clip); a cue spanning a cut splits per kept range. No "text" = transcript words in that span (UPPERCASE);
+    "text" = exactly that ("\n" for a line break). pos = [x, y] frame fractions of the caption's centre; cue pos overrides
+    captions.pos, which overrides the style's bottom placement. Font/size/colour come from style.json (brand) — edit that for
+    the whole client, not per cue. Keep cues sorted by output order and non-overlapping.
 
 Rules
 - Default deliverable is a changed edl.json. Do NOT render unless explicitly asked — the studio previews the EDL live from sources.
@@ -756,6 +784,7 @@ def make_handler(project: Project, claude: ClaudeRunner, render: RenderRunner, p
                 "apps": [a.get("name") for a in project.apps],
                 "brand": str(project.client_root / "brand.md") if project.client_root else None,
                 "bin": project.assets_bin(),
+                "capstyle": project.caption_style(),
                 "renders": {k: (int((project.edit_dir / f).stat().st_mtime) if (project.edit_dir / f).exists() else 0)
                             for k, f in (("draft", "draft.mp4"), ("preview", "preview.mp4"), ("final", "final.mp4"))},
             }
