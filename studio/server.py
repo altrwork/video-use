@@ -377,22 +377,28 @@ def watch_edl(project: Project) -> None:
 # ----------------------------------------------------------------------------
 
 def load_apps(video_use_dir: Path | None) -> list[dict]:
-    """Creative apps the studio's Claude may use over MCP. Written by the
-    video-use-setup skill to <video-use>/.studio.json. Without it, allow the
-    common creative connectors by their claude.ai names (harmless if absent)."""
+    """Creative apps the studio's Claude may use over MCP, opt-in only: listed in
+    <video-use>/.studio.json (the video-use-setup skill writes it). Nothing is
+    granted by default. `allow` is a list of tool names (preferred: just the
+    read/search/export tools) or a whole-server prefix string."""
     cfg = (video_use_dir / ".studio.json") if video_use_dir else None
-    if cfg and cfg.exists():
-        try:
-            apps = json.loads(cfg.read_text()).get("apps", [])
-            return [a for a in apps if isinstance(a, dict) and a.get("allow", "").startswith("mcp__")]
-        except Exception as e:
-            print(f"[studio] ignoring bad .studio.json: {e}", file=sys.stderr)
-    return [
-        {"name": "Canva", "allow": "mcp__claude_ai_Canva", "use_for": "brand kit, logos, designs → PNG/MP4"},
-        {"name": "Google Drive", "allow": "mcp__claude_ai_Google_Drive", "use_for": "logos, guidelines, b-roll"},
-        {"name": "Dropbox", "allow": "mcp__claude_ai_Dropbox", "use_for": "footage, logos, b-roll"},
-        {"name": "Adobe", "allow": "mcp__claude_ai_Adobe", "use_for": "stock, images, effects"},
-    ]
+    if not cfg or not cfg.exists():
+        return []
+    try:
+        apps = json.loads(cfg.read_text()).get("apps", [])
+    except Exception as e:
+        print(f"[studio] ignoring bad .studio.json: {e}", file=sys.stderr)
+        return []
+    out = []
+    for a in apps:
+        if not isinstance(a, dict):
+            continue
+        allow = a.get("allow")
+        allow = [allow] if isinstance(allow, str) else allow if isinstance(allow, list) else []
+        allow = [t for t in allow if isinstance(t, str) and re.fullmatch(r"mcp__[A-Za-z0-9_\-]+", t)]
+        if allow:
+            out.append({**a, "allow": allow})
+    return out
 
 
 SYSTEM_PROMPT = """\
@@ -497,11 +503,11 @@ class ClaudeRunner:
                 brand=(f"- client brand: {p.client_root}/brand.md (read it before any styling decision), "
                        f"{p.client_root}/style.json (captions), assets in {p.client_root}/brand/"
                        if p.client_root else "- no client brand.md found (the video-use-setup skill creates one)"),
-                apps="\n".join(f"- {a.get('name')}: tools {a['allow']}__* — {a.get('use_for', '')}" for a in p.apps)
-                     or "- none configured",
+                apps="\n".join(f"- {a.get('name')}: {', '.join(a['allow'])} — {a.get('use_for', '')}" for a in p.apps)
+                     or "- none enabled (the user can enable apps by running the video-use-setup skill)",
             )
             tools = os.environ.get("STUDIO_ALLOWED_TOOLS", "Read Edit Write Glob Grep Bash")
-            tools += " " + " ".join(a["allow"] for a in p.apps)
+            tools += " " + " ".join(t for a in p.apps for t in a["allow"])
             cmd = [
                 os.environ.get("CLAUDE_BIN", "claude"), "-p", prompt,
                 "--output-format", "stream-json", "--verbose", "--include-partial-messages",
@@ -713,6 +719,9 @@ def make_handler(project: Project, claude: ClaudeRunner, render: RenderRunner, p
             if status == 206:
                 self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
             self.send_header("Cache-Control", "max-age=3600" if cache else "no-cache")
+            # user/brand files are rendered as media only — never as a document (SVG/HTML script)
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Content-Security-Policy", "sandbox; default-src 'none'; img-src 'self' data:; media-src 'self'")
             self.end_headers()
             try:
                 with path.open("rb") as f:

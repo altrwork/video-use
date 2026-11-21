@@ -61,7 +61,7 @@ Pick out creative sources: **Canva, Google Drive, Dropbox, Adobe, Figma, Notion,
 - `! Needs authentication` → tell them how: claude.ai connectors are authorized at claude.ai → Settings → Connectors (then they show up in the CLI automatically); CLI servers via `/mcp` in a `claude` terminal session. Continue with the others meanwhile.
 - not listed → it can be added from claude.ai → Settings → Connectors, or `claude mcp add`.
 
-Then write `<video-use>/.studio.json` (gitignored) so the Studio's Claude may call those tools without prompts. Tool-prefix rule, from the `claude mcp list` name:
+Then write `<video-use>/.studio.json` (gitignored). The Studio grants nothing by default; only what's listed here runs without prompts. Prefer listing just the read/search/export tools (get them from the server's tool list; e.g. Canva `search-designs`, `list-brand-kits`, `get-assets`, `export-design`, `get-export-formats`). A whole-server prefix is allowed when the user explicitly wants it. Tool-name rule, from the `claude mcp list` name:
 
 | Listed as | allow prefix |
 |---|---|
@@ -72,8 +72,13 @@ Then write `<video-use>/.studio.json` (gitignored) so the Studio's Claude may ca
 ```json
 {
   "apps": [
-    {"name": "Canva", "allow": "mcp__claude_ai_Canva", "use_for": "brand kit, logos, designs exported as PNG/MP4"},
-    {"name": "Google Drive", "allow": "mcp__claude_ai_Google_Drive", "use_for": "brand guidelines, raw logos, b-roll"}
+    {"name": "Canva", "use_for": "brand kit, logos, designs exported as PNG/MP4",
+     "allow": ["mcp__claude_ai_Canva__search-designs", "mcp__claude_ai_Canva__list-brand-kits",
+               "mcp__claude_ai_Canva__get-assets", "mcp__claude_ai_Canva__get-export-formats",
+               "mcp__claude_ai_Canva__export-design", "mcp__claude_ai_Canva__read-design"]},
+    {"name": "Google Drive", "use_for": "brand guidelines, raw logos, b-roll",
+     "allow": ["mcp__claude_ai_Google_Drive__search_files", "mcp__claude_ai_Google_Drive__read_file_content",
+               "mcp__claude_ai_Google_Drive__download_file_content", "mcp__claude_ai_Google_Drive__get_file_metadata"]}
   ]
 }
 ```
