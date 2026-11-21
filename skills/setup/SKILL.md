@@ -1,6 +1,6 @@
 ---
 name: video-use-setup
-description: First-run setup for video-use — checks the install, creates a client workspace, connects creative apps over MCP (Canva, Google Drive, Dropbox, Adobe, Figma, a website), pulls the brand kit from them, interviews the user for whatever is still missing, and writes brand.md + style.json + brand/ assets that every later edit and the Studio use. Use when someone says "set up video-use", "onboard a new client/brand", "brand setup", "connect Canva to video-use", or when video-use runs and no brand.md exists for the client.
+description: First-run setup for video-use — checks the install, creates a client workspace, connects creative apps over MCP (Canva, Google Drive, Dropbox, Adobe, Figma, a website), pulls the brand kit from them, interviews the user for whatever is still missing, and writes brand.md + style.json + brand/ assets that every later edit and the Studio use. Use when someone says "set up video-use", "onboard a new client/brand", "brand setup", "connect Canva to video-use", or when video-use runs and no brand.md exists for the client. Also use to update an existing brand ("update the altr brand", "change our caption style", "new logo", "add Dropbox to the studio").
 ---
 
 # video-use setup
@@ -8,6 +8,22 @@ description: First-run setup for video-use — checks the install, creates a cli
 Goal: in one sitting, go from a fresh install to a client workspace where every future video comes out on-brand without re-explaining anything. Pull from the user's apps first, ask second, verify last.
 
 Paths below: `<video-use>` is this repo (the directory two levels above this file). `<root>` is where the user keeps video projects. `<client>` is `<root>/<client-slug>/`.
+
+## Fresh setup or update?
+
+Brand files live in the client folder (`<root>/<client>/`), never in this repo — it's code, and a public fork. If the user wants brand history, suggest `git init` inside the client folder (private remote).
+
+Ask for the client folder first. If `<client>/brand.md` already exists, this is an **update**, not a fresh setup:
+
+1. Read `brand.md`, `style.json`, list `brand/`, and read `<video-use>/.studio.json`. Summarize the current brand in ≤6 lines.
+2. Ask what's changing (multi-select): look (colors/fonts/grade) · captions · logo/recurring elements · voice/pacing · connected apps · re-pull everything from the apps.
+3. Run only the matching phases below. Re-pull from apps only when asked or when a source changed (new Canva kit, new logo file).
+4. Edit files in place. Preserve everything not being changed. Overwritten assets: keep the old one as `<name>.prev.<ext>` once.
+5. Re-run Phase 6 only for what changed (captions → caption test, logo → logo test).
+6. Append to `brand.md` a `## Changelog` line: `- <YYYY-MM-DD>: <what changed> (<source>)`. Update its `## Sources`.
+7. Tell the user existing edits keep their old renders; new renders (and the Studio) pick up the change automatically, because render.py reads `style.json` at render time.
+
+Small one-off tweaks don't need this skill at all: editing `brand.md` / `style.json` directly, or asking Claude in the Studio panel ("make the caption highlight our accent colour for the whole brand"), works too. The Studio's Claude can read and edit the client folder.
 
 ## Ground rules
 
