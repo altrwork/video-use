@@ -77,6 +77,7 @@ Helpers (`helpers/transcribe.py`, `helpers/render.py`, etc.) live alongside this
 - **`timeline_view.py <video> <start> <end>`** — filmstrip + waveform PNG. On-demand visual drill-down. **Not a scan tool** — use it at decision points, not constantly.
 - **`render.py <edl.json> -o <out>`** — per-segment extract → concat → overlays (PTS-shifted) → subtitles LAST. `--preview` for 720p fast. `--build-subtitles` to generate master.srt inline.
 - **`grade.py <in> -o <out>`** — ffmpeg filter chain grade. Presets + `--filter '<raw>'` for custom.
+- **`studio/server.py <edit_dir>`** — Video Use Studio: a live, Premiere-style editor for `edl.json` in the browser. See "Studio" below.
 
 For animations, create `<edit>/animations/slot_<id>/` with `Bash` and spawn a sub-agent via the `Agent` tool.
 
@@ -97,7 +98,25 @@ For animations, create `<edit>/animations/slot_<id>/` with `Bash` and spawn a su
    Also sample: first 2s, last 2s, and 2–3 mid-points — check grade consistency, subtitle readability, overall coherence. Run `ffprobe` on the output to verify duration matches the EDL expectation.
 
    If anything fails: fix → re-render → re-eval. **Cap at 3 self-eval passes** — if issues remain after 3, flag them to the user rather than looping forever. Only present the preview once the self-eval passes.
-8. **Iterate + persist.** Natural-language feedback, re-plan, re-render. Never re-transcribe. Final render on confirmation. Append to `project.md`.
+8. **Open the studio.** Once the first preview passes self-eval, launch Video Use Studio in the background so the user can refine the draft hands-on (see "Studio" below). Tell them the URL and that they can select clips, words or a point on the frame and ask for changes right there.
+9. **Iterate + persist.** Natural-language feedback, re-plan, re-render. Never re-transcribe. Final render on confirmation. Append to `project.md`.
+
+## Studio (live editor)
+
+`studio/` is a zero-dependency local web app over the edit folder — the familiar NLE for the last 20% after the first draft.
+
+```bash
+python studio/server.py <videos_dir>/edit          # opens http://127.0.0.1:4567
+```
+
+Run it with `Bash` `run_in_background` from the video-use repo root after the first draft. It:
+
+- plays the EDL live from the sources (cuts, overlays, captions, approximate grade) — no render needed to review;
+- edits `edl.json` directly: trim (snaps to word boundaries), reorder, split, delete, cut words from the transcript, restore struck words, inspector fields, undo/redo;
+- has a Claude panel: the user selects clips / words / an in-out range / a point on the frame and types an instruction. The studio runs headless `claude -p` in `<videos_dir>` with that selection (and a frame grab) attached and resumes the same session each time; it hot-reloads `edl.json` the moment Claude writes it and flashes what changed;
+- renders draft / preview / final through `helpers/render.py`.
+
+While the studio is open, `edl.json` is a live document — keep it valid JSON and render.py-compatible on every write. Studio state (chat log, session id, frame grabs, waveform/thumbnail cache) lives in `<edit>/studio/`. Env knobs: `STUDIO_MODEL`, `STUDIO_ALLOWED_TOOLS` (default `Read Edit Write Glob Grep Bash`), `CLAUDE_BIN`. `python studio/make_demo.py <dir>` builds a synthetic project (macOS `say`, no API key) to try it.
 
 ## Cut craft (techniques)
 
