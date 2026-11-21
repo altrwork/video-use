@@ -49,12 +49,65 @@ except Exception:
 # baseline roughly 30% up from the bottom on any aspect — clear of the UI on
 # every major vertical-video platform. Do not drop this below ~75 without a
 # specific reason.
-SUB_FORCE_STYLE = (
-    "FontName=Helvetica,FontSize=18,Bold=1,"
+DEFAULT_SUB_FORCE_STYLE = (
+    "FontName=Helvetica,FontSize=20,Bold=1,"
     "PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BackColour=&H00000000,"
     "BorderStyle=1,Outline=2,Shadow=0,"
-    "Alignment=2,MarginV=90"
+    "Alignment=2,MarginV=48"
 )
+
+# ASS force_style fields we know how to assemble from a structured style.json.
+# Any field omitted from style.json falls back to the DEFAULT_SUB_FORCE_STYLE value.
+_STYLE_FIELD_DEFAULTS = {
+    "FontName": "Helvetica",
+    "FontSize": "20",
+    "Bold": "1",
+    "PrimaryColour": "&H00FFFFFF",
+    "OutlineColour": "&H00000000",
+    "BackColour": "&H00000000",
+    "BorderStyle": "1",
+    "Outline": "2",
+    "Shadow": "0",
+    "Alignment": "2",
+    "MarginV": "48",
+}
+
+
+def load_subtitle_style(edit_dir: Path) -> str:
+    """Look for style.json and return the ASS force_style string to use.
+    Falls back to DEFAULT_SUB_FORCE_STYLE if none is found.
+
+    Checked in order (most specific wins):
+      1. <edit_dir>/style.json                    — this session/render only
+      2. <edit_dir>/../style.json                  — this dated shoot (videos_dir)
+      3. <edit_dir>/../../style.json                — client root, reused across shoots
+
+    style.json can either provide a raw override string:
+        {"subtitle_force_style": "FontName=Georgia,FontSize=24,..."}
+    or structured fields (missing fields fall back to the default):
+        {"subtitle": {"FontName": "Georgia", "PrimaryColour": "&H00E6F1FF"}}
+    """
+    candidates = [
+        edit_dir / "style.json",
+        edit_dir.parent / "style.json",
+        edit_dir.parent.parent / "style.json",
+    ]
+    for path in candidates:
+        if not path.exists():
+            continue
+        try:
+            data = json.loads(path.read_text())
+        except (json.JSONDecodeError, OSError):
+            continue
+        if data.get("subtitle_force_style"):
+            print(f"  style: {path} (raw force_style)")
+            return data["subtitle_force_style"]
+        fields = data.get("subtitle")
+        if fields:
+            merged = {**_STYLE_FIELD_DEFAULTS, **fields}
+            print(f"  style: {path} ({', '.join(fields.keys())} overridden)")
+            return ",".join(f"{k}={v}" for k, v in merged.items())
+    return DEFAULT_SUB_FORCE_STYLE
 
 # -------- Helpers ------------------------------------------------------------
 
@@ -254,11 +307,15 @@ def extract_segment(
     preview: bool = False,
     draft: bool = False,
     rate: str | None = None,
+    mute: bool = False,
 ) -> None:
     """Extract a cut range as its own MP4 with grade + 30ms audio fades baked in.
 
     `-ss` before `-i` for fast accurate seeking. Scale to 1080p from 4K.
     Portrait sources (height > width) are scaled by height to preserve orientation.
+    `mute=True` keeps the video but silences the audio for this segment only —
+    for footage where the visual is wanted but the accompanying dialogue (e.g. an
+    off-camera interviewer's question) is not.
 
     Quality ladder:
       - final (default): 1080p libx264 fast CRF 20
@@ -284,6 +341,8 @@ def extract_segment(
     # 30ms audio fades at both edges (Rule 3) — prevent pops
     fade_out_start = max(0.0, duration - 0.03)
     af = f"afade=t=in:st=0:d=0.03,afade=t=out:st={fade_out_start:.3f}:d=0.03"
+    if mute:
+        af = f"volume=0,{af}"
 
     if draft:
         preset, crf = "ultrafast", "28"
@@ -369,11 +428,12 @@ def extract_all_segments(
         else:
             seg_filter = resolved
 
+        mute = bool(r.get("mute"))
         note = r.get("beat") or r.get("note") or ""
-        print(f"  [{i:02d}] {src_name}  {start:7.2f}-{end:7.2f}  ({duration:5.2f}s)  {note}")
+        print(f"  [{i:02d}] {src_name}  {start:7.2f}-{end:7.2f}  ({duration:5.2f}s)  {note}{'  [MUTED]' if mute else ''}")
         if is_auto:
             print(f"        grade: {seg_filter or '(none)'}")
-        extract_segment(src_path, start, duration, seg_filter, out_path, preview=preview, draft=draft, rate=out_rate)
+        extract_segment(src_path, start, duration, seg_filter, out_path, preview=preview, draft=draft, rate=out_rate, mute=mute)
         seg_paths.append(out_path)
 
     return seg_paths
@@ -436,7 +496,7 @@ CHUNK_MIN_S = 0.35      # a cue shorter than this reads as a flash
 CHUNK_PAUSE_S = 0.3     # a gap this long between words ends the cue
 
 
-def chunk_words(words: list[dict]) -> list[list[dict]]:
+def chunk_words(words: list[dict], max_words: int = CHUNK_WORDS) -> list[list[dict]]:
     """Group transcript words into caption cues.
 
     A cue closes on trailing punctuation or on a pause before the next word.
@@ -444,6 +504,7 @@ def chunk_words(words: list[dict]) -> list[list[dict]]:
     less than CHUNK_MIN_S; then it takes up to CHUNK_MAX_WORDS words. So
     "does | is" across a pause stays split, and fast "what a" does not flash.
     """
+    target, grow = max_words, max(max_words, CHUNK_MAX_WORDS - CHUNK_WORDS + max_words)
     words = [w for w in words if (w.get("text") or "").strip()]
     chunks: list[list[dict]] = []
     current: list[dict] = []
@@ -457,18 +518,18 @@ def chunk_words(words: list[dict]) -> list[list[dict]]:
             nxt is None
             or text[-1] in PUNCT_BREAK
             or gap >= CHUNK_PAUSE_S
-            or len(current) >= CHUNK_MAX_WORDS
-            or (len(current) >= CHUNK_WORDS and dur >= CHUNK_MIN_S)
+            or len(current) >= grow
+            or (len(current) >= target and dur >= CHUNK_MIN_S)
         ):
             chunks.append(current)
             current = []
     return chunks
 
 
-def build_master_srt(edl: dict, edit_dir: Path, out_path: Path) -> None:
+def build_master_srt(edl: dict, edit_dir: Path, out_path: Path, max_words: int = CHUNK_WORDS) -> None:
     """Build an output-timeline SRT from per-source transcripts.
 
-    - phrase-aware ~2-word chunks (see chunk_words)
+    - phrase-aware ~max_words-word chunks (see chunk_words)
     - UPPERCASE text
     - Output times computed as word.start - segment_start + segment_offset
     """
@@ -484,6 +545,11 @@ def build_master_srt(edl: dict, edit_dir: Path, out_path: Path) -> None:
         seg_end = float(r["end"])
         seg_duration = seg_end - seg_start
 
+        if r.get("mute"):
+            # No audio, no caption — muted ranges keep the visual only.
+            seg_offset += seg_duration
+            continue
+
         tr_path = transcripts_dir / f"{src_name}.json"
         if not tr_path.exists():
             print(f"  no transcript for {src_name}, skipping captions for this segment")
@@ -493,7 +559,7 @@ def build_master_srt(edl: dict, edit_dir: Path, out_path: Path) -> None:
         transcript = json.loads(tr_path.read_text())
         words_in_seg = _words_in_range(transcript, seg_start, seg_end)
 
-        for chunk in chunk_words(words_in_seg):
+        for chunk in chunk_words(words_in_seg, max_words):
             local_start = max(seg_start, chunk[0].get("start", seg_start))
             local_end = min(seg_end, chunk[-1].get("end", seg_end))
             out_start = max(0.0, local_start - seg_start) + seg_offset
@@ -636,6 +702,7 @@ def build_final_composite(
     subtitles_path: Path | None,
     out_path: Path,
     edit_dir: Path,
+    force_style: str = DEFAULT_SUB_FORCE_STYLE,
 ) -> None:
     """Final pass: base → overlays (PTS-shifted) → subtitles LAST → out.
 
@@ -676,7 +743,7 @@ def build_final_composite(
     if has_subs:
         subs_abs = str(subtitles_path.resolve()).replace(":", r"\:").replace("'", r"\'")
         filter_parts.append(
-            f"{current}subtitles='{subs_abs}':force_style='{SUB_FORCE_STYLE}'[outv]"
+            f"{current}subtitles='{subs_abs}':force_style='{force_style}'[outv]"
         )
         out_label = "[outv]"
     else:
@@ -729,6 +796,12 @@ def main() -> None:
         help="Build master.srt from transcripts + EDL offsets before compositing",
     )
     ap.add_argument(
+        "--max-caption-words",
+        type=int,
+        default=2,
+        help="Max words per caption chunk when building subtitles (default: 2)",
+    )
+    ap.add_argument(
         "--no-subtitles",
         action="store_true",
         help="Skip subtitles even if the EDL references one",
@@ -776,19 +849,20 @@ def main() -> None:
     if not args.no_subtitles:
         if args.build_subtitles:
             subs_path = edit_dir / "master.srt"
-            build_master_srt(edl, edit_dir, subs_path)
+            build_master_srt(edl, edit_dir, subs_path, max_words=args.max_caption_words)
         elif edl.get("subtitles"):
             subs_path = resolve_subtitles_path(edl["subtitles"], edit_dir)
 
     # 4. Composite (overlays + subtitles LAST) → intermediate (pre-loudnorm) path
     overlays = edl.get("overlays") or []
+    force_style = load_subtitle_style(edit_dir)
     if args.no_loudnorm:
         # Composite directly to final output
-        build_final_composite(base_path, overlays, subs_path, out_path, edit_dir)
+        build_final_composite(base_path, overlays, subs_path, out_path, edit_dir, force_style)
     else:
         # Composite to a temp file, then run loudnorm → final output
         tmp_composite = out_path.with_suffix(".prenorm.mp4")
-        build_final_composite(base_path, overlays, subs_path, tmp_composite, edit_dir)
+        build_final_composite(base_path, overlays, subs_path, tmp_composite, edit_dir, force_style)
         print("loudness normalization → social-ready (-14 LUFS / -1 dBTP / LRA 11)")
         apply_loudnorm_two_pass(tmp_composite, out_path, preview=args.draft)
         tmp_composite.unlink(missing_ok=True)

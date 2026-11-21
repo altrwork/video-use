@@ -49,6 +49,12 @@ class Project:
         for d in (self.studio_dir, self.cache_dir, self.frames_dir):
             d.mkdir(parents=True, exist_ok=True)
         self.video_use_dir = video_use_dir
+        self.assets_dir = edit_dir / "assets"
+        self.assets_dir.mkdir(exist_ok=True)
+        # client layout: <client>/{brand.md,style.json,brand/} with shoots inside it
+        cr = self.videos_dir.parent
+        self.client_root = cr if ((cr / "brand.md").exists() or (cr / "brand").is_dir()) else None
+        self.apps = load_apps(video_use_dir)
         self.lock = threading.Lock()
         self.probe_cache: dict[str, dict] = {}
         self.assets_pending: set[str] = set()
@@ -96,12 +102,35 @@ class Project:
         restricted to the videos dir."""
         p = Path(rel)
         cands = [p] if p.is_absolute() else [self.edit_dir / p, self.videos_dir / p]
-        root = self.videos_dir.resolve()
+        roots = [self.videos_dir.resolve()]
+        if self.client_root:
+            roots.append((self.client_root / "brand").resolve())
         for c in cands:
             c = c.resolve()
-            if c.exists() and (c == root or root in c.parents):
+            if c.exists() and any(c == r or r in c.parents for r in roots):
                 return c
         return None
+
+    def assets_bin(self) -> list[dict]:
+        """Media the user can point Claude at: edit/assets/ (pulled from apps,
+        generated) and the client's brand/ folder."""
+        kinds = {".png": "image", ".jpg": "image", ".jpeg": "image", ".webp": "image", ".gif": "image",
+                 ".svg": "image", ".mp4": "video", ".mov": "video", ".webm": "video", ".m4v": "video",
+                 ".mp3": "audio", ".wav": "audio", ".m4a": "audio", ".aac": "audio",
+                 ".ttf": "font", ".otf": "font"}
+        groups = [("assets", self.assets_dir)]
+        if self.client_root and (self.client_root / "brand").is_dir():
+            groups.append(("brand", self.client_root / "brand"))
+        out = []
+        for group, base in groups:
+            for f in sorted(base.rglob("*")):
+                k = kinds.get(f.suffix.lower())
+                if not k or not f.is_file() or f.name.startswith("."):
+                    continue
+                out.append({"group": group, "kind": k, "name": str(f.relative_to(base)),
+                            "path": str(f.resolve()), "size": f.stat().st_size,
+                            "mtime": int(f.stat().st_mtime)})
+        return out[:500]
 
     # -- transcripts --------------------------------------------------------
     def transcript(self, name: str) -> list[dict]:
@@ -347,6 +376,31 @@ def watch_edl(project: Project) -> None:
 # Claude runner (headless claude -p, stream-json)
 # ----------------------------------------------------------------------------
 
+def load_apps(video_use_dir: Path | None) -> list[dict]:
+    """Creative apps the studio's Claude may use over MCP, opt-in only: listed in
+    <video-use>/.studio.json (the video-use-setup skill writes it). Nothing is
+    granted by default. `allow` is a list of tool names (preferred: just the
+    read/search/export tools) or a whole-server prefix string."""
+    cfg = (video_use_dir / ".studio.json") if video_use_dir else None
+    if not cfg or not cfg.exists():
+        return []
+    try:
+        apps = json.loads(cfg.read_text()).get("apps", [])
+    except Exception as e:
+        print(f"[studio] ignoring bad .studio.json: {e}", file=sys.stderr)
+        return []
+    out = []
+    for a in apps:
+        if not isinstance(a, dict):
+            continue
+        allow = a.get("allow")
+        allow = [allow] if isinstance(allow, str) else allow if isinstance(allow, list) else []
+        allow = [t for t in allow if isinstance(t, str) and re.fullmatch(r"mcp__[A-Za-z0-9_\-]+", t)]
+        if allow:
+            out.append({**a, "allow": allow})
+    return out
+
+
 SYSTEM_PROMPT = """\
 You are the editing engine behind Video Use Studio: a live, Premiere-style editor the user has open in their browser.
 They select clips, words, frames and time ranges in the timeline, then type an instruction. The studio hot-reloads
@@ -360,6 +414,15 @@ Project
 - packed transcript: {edit_dir}/takes_packed.md (if present)
 - video-use helpers: {helpers}  (render.py, timeline_view.py, grade.py). Full rules: {skill}
 - studio frame grabs: {edit_dir}/studio/frames/ (Read them to see what the user clicked on)
+- assets bin: {edit_dir}/assets/ — save anything you pull or generate for this edit here; it shows up in the studio's Assets tab
+{brand}
+Connected apps (MCP) — pull assets straight from them instead of asking the user to download things:
+{apps}
+- Find the asset with the app's search/list tools, export/download it at full resolution (transparent PNG for logos), save into the assets dir or the client brand/ folder, check it with ffprobe.
+- Stills on the timeline: render.py overlays are video files, so turn an image into a clip first, e.g.
+  ffmpeg -loop 1 -t <dur> -i logo.png -vf "format=rgba,scale=<w>:-1,pad=<out_w>:<out_h>:<x>:<y>:color=black@0" -c:v prores_ks -profile:v 4444 -pix_fmt yuva444p10le out.mov
+  (pad to the output size so position is baked in), then add it to edl.overlays.
+- If an app's tools fail with an auth error, tell the user to authorize it (claude.ai → Settings → Connectors) and continue without it.
 
 How the EDL maps to the timeline
 - Clips are edl.ranges in order, numbered 1..N in the UI. Output time of clip i starts at the sum of (end-start) of clips before it.
@@ -437,8 +500,14 @@ class ClaudeRunner:
                 videos_dir=p.videos_dir, edit_dir=p.edit_dir, edl=p.edl_path,
                 helpers=(vu / "helpers") if vu else "(video-use not found)",
                 skill=(vu / "SKILL.md") if vu else "(video-use not found)",
+                brand=(f"- client brand: {p.client_root}/brand.md (read it before any styling decision), "
+                       f"{p.client_root}/style.json (captions), assets in {p.client_root}/brand/"
+                       if p.client_root else "- no client brand.md found (the video-use-setup skill creates one)"),
+                apps="\n".join(f"- {a.get('name')}: {', '.join(a['allow'])} — {a.get('use_for', '')}" for a in p.apps)
+                     or "- none enabled (the user can enable apps by running the video-use-setup skill)",
             )
             tools = os.environ.get("STUDIO_ALLOWED_TOOLS", "Read Edit Write Glob Grep Bash")
+            tools += " " + " ".join(t for a in p.apps for t in a["allow"])
             cmd = [
                 os.environ.get("CLAUDE_BIN", "claude"), "-p", prompt,
                 "--output-format", "stream-json", "--verbose", "--include-partial-messages",
@@ -448,6 +517,8 @@ class ClaudeRunner:
             ]
             if vu:
                 cmd += ["--add-dir", str(vu)]
+            if p.client_root:
+                cmd += ["--add-dir", str(p.client_root)]
             if os.environ.get("STUDIO_MODEL"):
                 cmd += ["--model", os.environ["STUDIO_MODEL"]]
             if self.session_id:
@@ -525,6 +596,10 @@ def describe_tool(name: str, inp: dict) -> str:
         return f"Bash · {c[0][:80] if c else ''}"
     if name in ("Glob", "Grep"):
         return f"{name} {inp.get('pattern', '')[:60]}"
+    if name.startswith("mcp__"):
+        parts = name.split("__")
+        server = parts[1].replace("claude_ai_", "").replace("_", " ") if len(parts) > 1 else name
+        return f"{server} · {parts[-1] if len(parts) > 2 else ''}"
     if name in ("Agent", "Task"):
         return f"Sub-agent · {inp.get('description', '')[:60]}"
     return name
@@ -644,6 +719,9 @@ def make_handler(project: Project, claude: ClaudeRunner, render: RenderRunner, p
             if status == 206:
                 self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
             self.send_header("Cache-Control", "max-age=3600" if cache else "no-cache")
+            # user/brand files are rendered as media only — never as a document (SVG/HTML script)
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Content-Security-Policy", "sandbox; default-src 'none'; img-src 'self' data:; media-src 'self'")
             self.end_headers()
             try:
                 with path.open("rb") as f:
@@ -675,6 +753,9 @@ def make_handler(project: Project, claude: ClaudeRunner, render: RenderRunner, p
                 "claude_busy": claude.busy(),
                 "render_busy": render.busy(),
                 "video_use": str(project.video_use_dir) if project.video_use_dir else None,
+                "apps": [a.get("name") for a in project.apps],
+                "brand": str(project.client_root / "brand.md") if project.client_root else None,
+                "bin": project.assets_bin(),
                 "renders": {k: (int((project.edit_dir / f).stat().st_mtime) if (project.edit_dir / f).exists() else 0)
                             for k, f in (("draft", "draft.mp4"), ("preview", "preview.mp4"), ("final", "final.mp4"))},
             }
@@ -713,6 +794,8 @@ def make_handler(project: Project, claude: ClaudeRunner, render: RenderRunner, p
             # everything but the page itself needs the token (API, media, renders, cache)
             if not self.token_ok(u.query):
                 return
+            if path == "/api/bin":
+                return self.send_json(project.assets_bin())
             if path == "/api/project":
                 return self.send_json(self.project_payload())
             if path.startswith("/api/assets/"):
