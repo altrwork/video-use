@@ -1,0 +1,32 @@
+// Team deployment: custom domain, Cloudflare Access for people, your own OAuth server for the Claude connector.
+// Copy to wrangler.local.jsonc (gitignored), fill in the <placeholders>, then:
+//   npx wrangler deploy -c wrangler.local.jsonc
+// See DEPLOY.md for the full checklist.
+{
+  "name": "<worker-name>",
+  "account_id": "<cloudflare account id>",
+  "main": "src/index.js",
+  "compatibility_date": "2026-06-01",
+  "workers_dev": false,
+  "preview_urls": false,
+  "routes": [{ "pattern": "<editor.example.com>", "custom_domain": true }],
+  "rules": [{ "type": "Text", "globs": ["**/*.html"], "fallthrough": true }],
+  "durable_objects": { "bindings": [{ "name": "WORKSPACE", "class_name": "Workspace" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Workspace"] }],
+  "kv_namespaces": [{ "binding": "OAUTH_KV" }],
+  // Optional: reach the OAuth server over a service binding instead of the public internet.
+  // "services": [{ "binding": "AUTH", "service": "<oauth worker name>" }],
+  "observability": { "enabled": true },
+  "vars": {
+    "ACCESS_TEAM_DOMAIN": "https://<team>.cloudflareaccess.com",
+    "ALLOWED_EMAIL_DOMAINS": "<example.com>",
+    "OAUTH_ISSUER": "https://<auth.example.com>",
+    "OAUTH_RESOURCE": "https://<editor.example.com>/mcp",
+    "OAUTH_CLIENT_ID": "editor",
+    "OAUTH_SCOPES": "editor:read,editor:write"
+  }
+  // Set with `wrangler secret put <NAME> -c wrangler.local.jsonc`:
+  //   SYNC_KEY, COOKIE_KEY          random strings (e.g. `openssl rand -base64 36`)
+  //   ACCESS_AUD                    the Access application's AUD tag
+  //   OAUTH_INTROSPECT_SECRET       this app's introspection secret at the OAuth server
+}
