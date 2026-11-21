@@ -92,7 +92,7 @@ kbd{font-family:ui-monospace,Menlo,monospace;font-size:10.5px;background:var(--p
 .seg button{border:0;background:transparent;padding:3px 10px;border-radius:5px;color:var(--mute)}
 .seg button.on{background:#3a3a43;color:var(--ink)}
 .stage-wrap{flex:1;display:flex;align-items:center;justify-content:center;min-height:0;padding:12px;position:relative}
-.stage{position:relative;background:#000;box-shadow:0 0 0 1px var(--line);overflow:hidden;cursor:crosshair}
+.stage{position:relative;background:#000;box-shadow:0 0 0 1px var(--line);overflow:hidden;cursor:default}
 .stage video.src,.stage video.ov{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;visibility:hidden}
 .stage video.src.on,.stage video.ov.on{visibility:visible}
 .stage video.ov{pointer-events:none;mix-blend-mode:normal}
@@ -104,7 +104,12 @@ kbd{font-family:ui-monospace,Menlo,monospace;font-size:10.5px;background:var(--p
 .cap.sel{outline:2px solid var(--accent);outline-offset:3px}
 .cap.editing{cursor:text;outline:2px solid var(--blue);background:#0006}
 .xf{position:absolute;border:1.5px solid var(--accent);pointer-events:none;z-index:4;box-shadow:0 0 0 1px #0008}
-.xf.ov{pointer-events:auto;cursor:move;background:#ff6a1a0d}
+.xf.ov{background:#ff6a1a0d}
+.hov{position:absolute;border:1px dashed #ffffffaa;pointer-events:none;z-index:3;border-radius:2px}
+.notes{display:flex;flex-direction:column;gap:6px;padding:10px;height:100%;box-sizing:border-box}.notes label{font-size:12px;font-weight:600;margin-top:4px}.notes label small{display:block;font-weight:400;color:var(--mute)}.notes textarea{flex:1;min-height:90px;resize:none;background:var(--panel2);color:var(--ink);border:1px solid var(--line2);border-radius:7px;padding:8px;font:12px/1.45 inherit}
+.change{border:1px solid var(--line2);border-radius:8px;padding:7px 9px;font-size:12px;color:var(--mute);display:flex;gap:8px;align-items:center}.change span{flex:1}.change.reverted{opacity:.5}
+.askpill{position:fixed;z-index:60;background:var(--panel2);border:1px solid var(--line2);border-radius:999px;padding:3px 10px;font-size:12px;color:var(--ink);cursor:pointer;box-shadow:0 4px 14px #0008;white-space:nowrap}
+.askpill:hover{border-color:var(--accent)}.askpill kbd{margin-left:6px;opacity:.6}
 .xf i{position:absolute;width:11px;height:11px;margin:-6px 0 0 -6px;background:#fff;border:2px solid var(--accent);border-radius:2px;pointer-events:auto}
 .xf i[data-c="tl"]{left:0;top:0;cursor:nwse-resize}.xf i[data-c="tr"]{left:100%;top:0;cursor:nesw-resize}
 .xf i[data-c="bl"]{left:0;top:100%;cursor:nesw-resize}.xf i[data-c="br"]{left:100%;top:100%;cursor:nwse-resize}
@@ -224,10 +229,17 @@ kbd{font-family:ui-monospace,Menlo,monospace;font-size:10.5px;background:var(--p
   </div>
 
   <div class="left">
-    <div class="tabs"><button class="on" data-tab="tx">Transcript</button><button data-tab="insp">Inspector</button><button data-tab="bin">Assets</button></div>
+    <div class="tabs"><button class="on" data-tab="tx">Transcript</button><button data-tab="insp">Inspector</button><button data-tab="bin">Assets</button><button data-tab="ctx">Context</button></div>
     <div class="pane" id="pane-tx"><div class="tx" id="tx"></div></div>
     <div class="pane hidden" id="pane-insp"><div id="insp"></div></div>
     <div class="pane hidden" id="pane-bin"><div class="bin" id="bin"></div></div>
+    <div class="pane hidden" id="pane-ctx"><div class="notes">
+      <div class="row" style="gap:6px"><button id="ctxPull">✦ Pull facts from apps…</button></div>
+      <label>This video <small>names, site, dates, numbers — Claude uses these for captions and graphics</small></label>
+      <textarea id="noteContext" placeholder="e.g.&#10;Site: 214 Harbor St, roof replacement&#10;Speaker: Dana Ruiz, Project Manager&#10;Finished: March 14"></textarea>
+      <label>Always <small>standing preferences for this client — Claude follows and adds to these</small></label>
+      <textarea id="notePrefs" placeholder="e.g.&#10;Never cut the pause before a punchline&#10;Captions max 2 lines"></textarea>
+    </div></div>
     <div class="hint">Click a word to seek. Drag across words, then <kbd>⌫</kbd> to cut them. Click a <span style="text-decoration:line-through">struck</span> word to restore it.</div>
   </div>
 
@@ -238,7 +250,7 @@ kbd{font-family:ui-monospace,Menlo,monospace;font-size:10.5px;background:var(--p
       <label class="meta"><input type="checkbox" id="capToggle"> captions</label>
     </div>
     <div class="stage-wrap" id="stageWrap">
-      <div class="stage" id="stage"><div class="cap" id="cap"></div><div class="xf hidden" id="xf"><b id="xfl"></b><i data-c="tl"></i><i data-c="tr"></i><i data-c="bl"></i><i data-c="br"></i></div><div class="badge" id="gradeBadge"></div></div>
+      <div class="stage" id="stage"><div class="cap" id="cap"></div><div class="hov hidden" id="hov"></div><div class="xf hidden" id="xf"><b id="xfl"></b><i data-c="tl"></i><i data-c="tr"></i><i data-c="bl"></i><i data-c="br"></i></div><div class="badge" id="gradeBadge"></div></div>
       <div class="rendered hidden" id="rendered"><video id="rvid" controls playsinline></video></div>
     </div>
     <div class="transport">
@@ -284,7 +296,7 @@ kbd{font-family:ui-monospace,Menlo,monospace;font-size:10.5px;background:var(--p
           <button data-m="custom">Custom…<small>describe it yourself</small></button>
         </div></div>
       <button class="ghost" id="addCap" title="Add a caption at the playhead (T)">+ Caption</button><button class="ghost" id="resetCaps" title="Throw away caption edits and go back to auto captions from the transcript">↺ Auto captions</button>
-      <span class="tool">captions: double-click to retype · drag on the frame (<kbd>⇧</kbd> moves all) · drag edges to retime · <kbd>T</kbd> new · <kbd>S</kbd> split · <kbd>⌫</kbd> delete · <kbd>I</kbd>/<kbd>O</kbd> mark range · drag edges to trim (snaps to words, <kbd>⌥</kbd> free) · drag clips to reorder · click the frame to point Claude at it</span>
+      <span class="tool">captions: double-click to retype · drag on the frame (<kbd>⇧</kbd> moves all) · drag edges to retime · <kbd>T</kbd> new · <kbd>S</kbd> split · <kbd>⌫</kbd> delete · <kbd>I</kbd>/<kbd>O</kbd> mark range · drag edges to trim (snaps to words, <kbd>⌥</kbd> free) · drag clips to reorder · click anything on the frame to select it · <kbd>/</kbd> ask Claude about it</span>
       <span class="meta" id="tlinfo" style="white-space:nowrap"></span>
       <span class="meta">zoom</span><input type="range" id="zoom" min="0" max="100" value="35" style="width:140px">
     </div>
@@ -421,7 +433,7 @@ async function load() {
   $('proj').textContent = p.name + ' / edit';
   S.showCaps = !!S.edl.subtitles; $('capToggle').checked = S.showCaps;
   S.claudeBusy = p.claude_busy; setBusy(S.claudeBusy);
-  S.bin = p.bin || []; S.apps = p.apps || []; S.brand = p.brand; S.capstyle = p.capstyle || {};
+  S.bin = p.bin || []; S.apps = p.apps || []; S.brand = p.brand; setNotes(p.notes); S.capstyle = p.capstyle || {};
   $('brandBadge').innerHTML = S.brand ? `<span class="brandok" title="${esc(S.brand)}">brand ✓</span>` : '<span class="brandno" title="Run the video-use-setup skill to create brand.md">no brand.md</span>';
   (p.chat || []).forEach(renderChatEntry);
   if (!p.video_use) toast('video-use repo not found — rendering disabled (pass --video-use)', 5000);
@@ -1088,14 +1100,36 @@ function xfTarget() {
   return null;
 }
 let xfDrag = null;
+// Opaque bounds of a graphic inside its own box (fractions), so a full-frame alpha graphic gets a tight box.
+const bbCv = document.createElement('canvas'); bbCv.width = 96; bbCv.height = 96;
+const bbCx = bbCv.getContext('2d', { willReadFrequently: true });
+const bbCache = new Map();
+const FULL_BB = { x0: 0, y0: 0, x1: 1, y1: 1 };
+function ovBBox(el) {
+  if (!el.videoWidth || el.readyState < 2) return FULL_BB;
+  const key = el.src + '@' + el.currentTime.toFixed(2), hit = bbCache.get(el);
+  if (hit && hit.key === key) return hit.bb;
+  let bb = FULL_BB;
+  try {
+    const N = 96; bbCx.clearRect(0, 0, N, N); bbCx.drawImage(el, 0, 0, N, N);
+    const d = bbCx.getImageData(0, 0, N, N).data; let x0 = N, y0 = N, x1 = -1, y1 = -1;
+    for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) if (d[(y * N + x) * 4 + 3] > 12) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+    if (x1 >= 0) bb = { x0: x0 / N, y0: y0 / N, x1: (x1 + 1) / N, y1: (y1 + 1) / N };
+  } catch (_) {}
+  bbCache.set(el, { key, bb }); return bb;
+}
+function ovRect(el) { // on-screen rect of the visible part of a graphic
+  const r = el.getBoundingClientRect(), bb = ovBBox(el);
+  return { left: r.left + bb.x0 * r.width, top: r.top + bb.y0 * r.height, width: (bb.x1 - bb.x0) * r.width, height: (bb.y1 - bb.y0) * r.height };
+}
 function updateXf() {
   const box = $('xf'), t = xfDrag ? xfDrag.t : xfTarget();
   if (!t || S.monitor !== 'live') { box.classList.add('hidden'); return; }
-  const st = $('stage').getBoundingClientRect(), r = t.el.getBoundingClientRect();
+  const st = $('stage').getBoundingClientRect(), r = t.kind === 'ov' ? ovRect(t.el) : t.el.getBoundingClientRect();
   box.classList.remove('hidden'); box.classList.toggle('ov', t.kind === 'ov');
   box.style.left = (r.left - st.left) + 'px'; box.style.top = (r.top - st.top) + 'px';
   box.style.width = r.width + 'px'; box.style.height = r.height + 'px';
-  $('xfl').textContent = t.kind === 'cap' ? `caption ${Math.round((t.d.scale || 1) * 100)}%` : `graphic ${Math.round((t.ov.w ?? (r.width / st.width)) * 100)}% wide`;
+  $('xfl').textContent = t.kind === 'cap' ? `caption ${Math.round((t.d.scale || 1) * 100)}%` : `graphic ${Math.round(r.width / st.width * 100)}% wide`;
 }
 // Give an un-placed overlay explicit x/y/w from its native size (same as render.py's 0,0 native placement).
 function materializeOv(ov, el) {
@@ -1103,25 +1137,51 @@ function materializeOv(ov, el) {
   const nw = el.videoWidth || outDims()[0];
   ov.x = +ov.x || 0; ov.y = +ov.y || 0; ov.w = r3(nw / outDims()[0]);
 }
+// Is there something visible of this graphic under the pointer? Samples the real pixels (alpha), with a
+// few px of slack so thin text is easy to hit. Opaque video counts everywhere inside its box.
+const hitCv = document.createElement('canvas'); hitCv.width = hitCv.height = 1;
+const hitCx = hitCv.getContext('2d', { willReadFrequently: true });
+function ovAlphaAt(el, cx, cy) {
+  const r = el.getBoundingClientRect();
+  if (cx < r.left || cx > r.right || cy < r.top || cy > r.bottom) return 0;
+  if (!el.videoWidth || el.readyState < 2) return 255;
+  try {
+    const k = el.videoWidth / r.width, rad = 7 * k;
+    hitCx.clearRect(0, 0, 1, 1);
+    hitCx.drawImage(el, (cx - r.left) * k - rad, (cy - r.top) * el.videoHeight / r.height - rad, rad * 2, rad * 2, 0, 0, 1, 1);
+    return hitCx.getImageData(0, 0, 1, 1).data[3];
+  } catch (_) { return 255; }
+}
 function hitOverlay(clientX, clientY) {
   for (let k = ovPlayers.length - 1; k >= 0; k--) {
-    const { el, i } = ovPlayers[k], ov = S.edl.overlays[i];
-    if (!el.classList.contains('on') || !ov || ov.w == null) continue; // full-frame/native ones: select them on V2
-    const r = el.getBoundingClientRect();
-    if (clientX >= r.left && clientX <= r.right && clientY >= r.top && clientY <= r.bottom) return i;
+    const { el, i } = ovPlayers[k];
+    if (!el.classList.contains('on') || !S.edl.overlays[i]) continue;
+    if (ovAlphaAt(el, clientX, clientY) > 6) return i;
   }
   return -1;
 }
+function hitCap(clientX, clientY) {
+  if (!lastCue || !S.showCaps) return false;
+  const r = $('cap').getBoundingClientRect(), pad = 8;
+  return r.width > 0 && clientX >= r.left - pad && clientX <= r.right + pad && clientY >= r.top - pad && clientY <= r.bottom + pad;
+}
+// What is under the pointer on the frame: caption first (it renders on top), then graphics, then the video.
+function hitFrame(clientX, clientY) {
+  if (hitCap(clientX, clientY)) return { kind: 'cap' };
+  const i = hitOverlay(clientX, clientY);
+  return i >= 0 ? { kind: 'ov', i } : { kind: 'frame' };
+}
 function startXf(e, t, corner) {
   if (S.claudeBusy) { toast('Claude is editing — hold on a sec'); return; }
-  e.preventDefault(); e.stopPropagation(); pause(); S.suppressClick = true;
+  e.preventDefault(); e.stopPropagation(); pause();
   const st = $('stage').getBoundingClientRect(), r = t.el.getBoundingClientRect();
   const snapshot = JSON.stringify(S.edl), x0 = e.clientX, y0 = e.clientY; let moved = false;
   const fx = (cx) => (cx - st.left) / st.width, fy = (cy) => (cy - st.top) / st.height;
   xfDrag = { t };
-  let o0 = null, ar = 1, cap0 = null;
+  let o0 = null, ar = 1, cap0 = null, bb = FULL_BB;
   if (t.kind === 'ov') {
     materializeOv(t.ov, t.el);
+    bb = ovBBox(t.el);
     o0 = { x: +t.ov.x, y: +t.ov.y, w: +t.ov.w };
     ar = (t.el.videoWidth && t.el.videoHeight) ? t.el.videoWidth / t.el.videoHeight : r.width / r.height; // clip aspect
   } else {
@@ -1139,18 +1199,19 @@ function startXf(e, t, corner) {
     const ov = t.ov;
     if (!corner) { ov.x = r3(o0.x + fx(ev.clientX) - fx(x0)); ov.y = r3(o0.y + fy(ev.clientY) - fy(y0)); }
     else {
+      // scale the whole graphic about the opposite corner of its visible box
       const h0 = o0.w * frameAR / ar, left = corner.includes('l'), top = corner.includes('t');
-      const ax = left ? o0.x + o0.w : o0.x, ay = top ? o0.y + h0 : o0.y;          // opposite corner stays put
-      const w = clamp(Math.max(Math.abs(fx(ev.clientX) - ax), Math.abs(fy(ev.clientY) - ay) * ar / frameAR), 0.02, 3);
-      const h = w * frameAR / ar;
-      ov.w = r3(w); ov.x = r3(left ? ax - w : ax); ov.y = r3(top ? ay - h : ay);
+      const B = { l: o0.x + bb.x0 * o0.w, r: o0.x + bb.x1 * o0.w, t: o0.y + bb.y0 * h0, b: o0.y + bb.y1 * h0 };
+      const ax = left ? B.r : B.l, ay = top ? B.b : B.t;
+      const sc = clamp(Math.max(Math.abs(fx(ev.clientX) - ax) / (B.r - B.l), Math.abs(fy(ev.clientY) - ay) / (B.b - B.t)), 0.02 / o0.w, 5 / o0.w);
+      ov.w = r3(o0.w * sc); ov.x = r3(ax + (o0.x - ax) * sc); ov.y = r3(ay + (o0.y - ay) * sc);
     }
     placeOverlay(t.el, ov);
   };
   const up = (ev) => {
     window.removeEventListener('mousemove', mv); window.removeEventListener('mouseup', up);
-    xfDrag = null; setTimeout(() => (S.suppressClick = false), 0);
-    if (!moved) { S.edl = JSON.parse(snapshot); return; }
+    xfDrag = null;
+    if (!moved) { S.edl = JSON.parse(snapshot); if (t.kind === 'ov') showAskPill(ev.clientX, ev.clientY); return; }
     if (t.kind === 'cap') {
       const sc = r3(t.d.scale), qi = cueIndex(t.d), all = ev.shiftKey;
       S.edl = JSON.parse(snapshot);
@@ -1165,20 +1226,49 @@ function startXf(e, t, corner) {
   };
   window.addEventListener('mousemove', mv); window.addEventListener('mouseup', up);
 }
-$('xf').addEventListener('mousedown', (e) => {
-  const t = xfTarget(); if (!t) return;
-  const corner = e.target.dataset?.c || null;
-  if (!corner && t.kind === 'cap') return; // caption body drag is handled by the caption itself
-  startXf(e, t, corner);
-});
+// One pointer model for the frame: a click always selects what is under it (caption → graphic → the
+// video itself). Asking Claude is a second, optional step (the ✦ pill, or just type in the Claude panel).
 $('stage').addEventListener('mousedown', (e) => {
-  if (e.target.closest('#cap,#xf')) return;
-  const i = hitOverlay(e.clientX, e.clientY); if (i < 0) return;
-  S.sel = { clips: new Set(), overlays: new Set([i]), words: null, range: null, pin: null, assets: new Set(), cue: null };
+  if (e.button !== 0 || S.monitor !== 'live') return;
+  hideAskPill(); document.querySelector('.ask')?.remove();
+  const corner = e.target.dataset?.c;
+  if (corner && e.target.closest('#xf')) { const t = xfTarget(); if (t) startXf(e, t, corner); return; }
+  if (capEditing) { if (e.target.closest('#cap')) return; $('cap').blur(); }
+  const h = hitFrame(e.clientX, e.clientY);
+  if (h.kind === 'cap') return capDown(e);
+  if (h.kind === 'ov') {
+    S.sel = { clips: new Set(), overlays: new Set([h.i]), words: null, range: null, pin: null, assets: new Set(), cue: null };
+    renderAll(); drawPin();
+    const p = ovPlayers.find((o) => o.i === h.i);
+    startXf(e, { kind: 'ov', i: h.i, el: p.el, ov: S.edl.overlays[h.i] }, null);
+    return;
+  }
+  // bare video: point at this spot of the frame
+  e.preventDefault();
+  const st = $('stage').getBoundingClientRect(), p = outToSrc(S.out);
+  S.sel.overlays.clear(); S.sel.cue = null; S.sel.pin = null;
+  if (p) { pause(); S.sel.pin = { out: S.out, x: (e.clientX - st.left) / st.width, y: (e.clientY - st.top) / st.height, src: p.c.src, t: p.t, clip: p.c.i }; }
   renderAll(); drawPin();
-  const p = ovPlayers.find((o) => o.i === i);
-  startXf(e, { kind: 'ov', i, el: p.el, ov: S.edl.overlays[i] }, null);
+  if (p) showAskPill(e.clientX, e.clientY);
 });
+// hover: show what a click would select
+let hovRaf = 0;
+$('stage').addEventListener('mousemove', (e) => {
+  if (hovRaf || xfDrag || capEditing) return;
+  hovRaf = requestAnimationFrame(() => {
+    hovRaf = 0;
+    const hov = $('hov'), st = $('stage');
+    if (e.target.dataset?.c) { hov.classList.add('hidden'); return; }
+    const h = S.monitor === 'live' ? hitFrame(e.clientX, e.clientY) : { kind: 'frame' };
+    st.style.cursor = h.kind === 'frame' ? 'crosshair' : 'move';
+    const sel = h.kind === 'ov' && S.sel.overlays.has(h.i);
+    if (h.kind !== 'ov' || sel) { hov.classList.add('hidden'); return; }
+    const r = ovRect(ovPlayers.find((o) => o.i === h.i).el), s0 = st.getBoundingClientRect();
+    hov.classList.remove('hidden');
+    hov.style.left = (r.left - s0.left) + 'px'; hov.style.top = (r.top - s0.top) + 'px'; hov.style.width = r.width + 'px'; hov.style.height = r.height + 'px';
+  });
+});
+$('stage').addEventListener('mouseleave', () => $('hov').classList.add('hidden'));
 
 function editCap() {
   const d = selCue() || lastCue; if (!d) return;
@@ -1198,12 +1288,11 @@ function editCap() {
   const blur = () => done(true);
   cap.addEventListener('keydown', key); cap.addEventListener('blur', blur);
 }
-$('cap').addEventListener('mousedown', (e) => {
+function capDown(e) {
   if (capEditing) return;
   e.preventDefault(); e.stopPropagation();
   const d = lastCue; if (!d) return;
   if (S.claudeBusy) { toast('Claude is editing — hold on a sec'); return; }
-  S.suppressClick = true;
   if (e.detail === 2) { selectCue(d, false); editCap(); return; }
   pause(); selectCue(d, false);
   const st = $('stage').getBoundingClientRect(), cr = $('cap').getBoundingClientRect();
@@ -1222,8 +1311,7 @@ $('cap').addEventListener('mousedown', (e) => {
   };
   const up = (ev) => {
     window.removeEventListener('mousemove', mv); window.removeEventListener('mouseup', up); guide?.remove();
-    setTimeout(() => (S.suppressClick = false), 0);
-    if (!moved || !pos) return;
+    if (!moved || !pos) { showAskPill(ev.clientX, ev.clientY); return; }
     const all = ev.shiftKey, qi = cueIndex(d);
     mutate((edl) => {
       const cues = ensureCues(edl);
@@ -1234,17 +1322,23 @@ $('cap').addEventListener('mousedown', (e) => {
     toast(all ? 'Moved all captions' : 'Moved this caption · hold ⇧ while dragging to move all');
   };
   window.addEventListener('mousemove', mv); window.addEventListener('mouseup', up);
-});
-$('stage').addEventListener('click', (e) => {
-  if (e.target.closest('#cap') || S.suppressClick) { S.suppressClick = false; return; }
-  const st = $('stage').getBoundingClientRect();
-  const x = (e.clientX - st.left) / st.width, y = (e.clientY - st.top) / st.height;
-  const p = outToSrc(S.out); if (!p) return;
-  pause();
-  S.sel.pin = { out: S.out, x, y, src: p.c.src, t: p.t, clip: p.c.i };
-  renderChips(); drawPin();
-  showAsk(e.clientX, e.clientY, 'What should change here?');
-});
+}
+// Small, non-focus-stealing "ask Claude about this" pill next to what was just selected on the frame.
+function hideAskPill() { document.querySelector('.askpill')?.remove(); }
+function showAskPill(cx, cy) {
+  hideAskPill();
+  const b = document.createElement('div'); b.className = 'askpill'; b.innerHTML = '✦ Ask Claude <kbd>/</kbd>';
+  b.style.left = clamp(cx + 14, 8, innerWidth - 150) + 'px'; b.style.top = clamp(cy + 14, 8, innerHeight - 40) + 'px';
+  b.dataset.x = cx; b.dataset.y = cy;
+  b.addEventListener('mousedown', (ev) => { ev.preventDefault(); ev.stopPropagation(); askHere(); });
+  document.body.appendChild(b);
+}
+function askHere() {
+  const pill = document.querySelector('.askpill'), st = $('stage').getBoundingClientRect();
+  const cx = pill ? +pill.dataset.x : st.left + st.width / 2, cy = pill ? +pill.dataset.y : st.top + st.height / 2;
+  hideAskPill();
+  showAsk(cx, cy, selCue() ? 'Change this caption…' : S.sel.overlays.size ? 'Change this graphic…' : S.sel.pin ? 'What should change here?' : 'What should change?');
+}
 function drawPin() {
   let pin = document.querySelector('.pin');
   const p = S.sel.pin;
@@ -1407,7 +1501,7 @@ function renderChips() {
     : S.sel.pin ? ['Add a lower-third here', 'Punch in on this', 'Add a text callout pointing here', 'What do you see in this frame?']
     : S.sel.words ? ['Cut this', 'Emphasize these words in the captions', 'Add a title card on this line', 'Find a cleaner take of this line']
       : ['Tighten this — cut pauses & filler', 'Make this punchier', 'Is there a better take?', 'Add a b-roll style overlay here'])
-    : ['Tighten the whole edit to 60s', 'Remove every um/uh', 'Suggest a stronger hook'];
+    : ['Tighten the whole edit to 60s', 'Remove every um/uh', 'Suggest a stronger hook', S.apps.length ? `Illustrate what\'s said with photos from ${S.apps[0]}` : 'Review the cut and tell me what\'s weak'];
   $('sugg').innerHTML = sug.map((t) => `<button>${esc(t)}</button>`).join('');
   $('sugg').querySelectorAll('button').forEach((b) => b.addEventListener('click', () => { $('prompt').value = b.textContent; $('prompt').focus(); }));
 }
@@ -1448,7 +1542,49 @@ function selectionText() {
   if (s.pin) L.push(`User clicked the frame at output ${s.pin.out.toFixed(2)}s (clip ${s.pin.clip + 1}, ${s.pin.src} @ ${s.pin.t.toFixed(2)}s source), point x=${(s.pin.x * 100).toFixed(0)}% y=${(s.pin.y * 100).toFixed(0)}% from top-left. Frame grab attached.`);
   return L.join('\n');
 }
-let streamEl = null;
+// ---- Context tab: facts for this video + standing preferences (Claude reads and writes both) ----
+function setNotes(n) {
+  if (!n) return;
+  for (const [k, id] of [['context', 'noteContext'], ['prefs', 'notePrefs']]) { const el = $(id); if (document.activeElement !== el) el.value = n[k] || ''; el.dataset.saved = n[k] || ''; }
+}
+for (const [k, id] of [['context', 'noteContext'], ['prefs', 'notePrefs']]) $(id).addEventListener('blur', async (e) => {
+  const el = e.target; if (el.value === el.dataset.saved) return;
+  const r = await api('/api/notes', { which: k, text: el.value });
+  if (r.ok) { el.dataset.saved = el.value; toast('Saved — Claude will use it'); } else toast(r.error || 'Could not save');
+});
+$('ctxPull').onclick = () => {
+  $('prompt').value = `Pull the facts for this video from ${S.apps.length ? S.apps.join(', ') : 'our connected apps'}: the project/site name and address, key dates and milestones, people on camera (names and titles, exact spelling) and any numbers worth showing. Save them to context.md with where each came from, and save useful photos into edit/assets/. Project to look for: [PROJECT NAME]`;
+  $('prompt').focus(); const m = /\[[A-Z ]+\]/.exec($('prompt').value); if (m) $('prompt').setSelectionRange(m.index, m.index + m[0].length);
+};
+// ---- What did Claude change? One line per turn, with a one-click revert ----
+function describeChange(a, b) {
+  const dur = (e) => (e.ranges || []).reduce((t, r) => t + (r.end - r.start), 0), out = [];
+  const ka = new Set((a.ranges || []).map((r) => `${r.source}|${r.start}|${r.end}`)), kb = new Set((b.ranges || []).map((r) => `${r.source}|${r.start}|${r.end}`));
+  const gone = [...ka].filter((k) => !kb.has(k)).length, fresh = [...kb].filter((k) => !ka.has(k)).length;
+  if (gone || fresh) { const d = dur(b) - dur(a); out.push(`${Math.max(gone, fresh)} clip${Math.max(gone, fresh) > 1 ? 's' : ''} changed (${d >= 0 ? '+' : '−'}${Math.abs(d).toFixed(2)}s, now ${fmt(dur(b), true)})`); }
+  else if (JSON.stringify(a.ranges) !== JSON.stringify(b.ranges)) out.push('clips reordered or adjusted');
+  const oa = (a.overlays || []).map((o) => JSON.stringify(o)), ob = (b.overlays || []).map((o) => JSON.stringify(o));
+  const oAdd = ob.filter((o) => !oa.includes(o)).length, oDel = oa.filter((o) => !ob.includes(o)).length;
+  if (ob.length > oa.length) out.push(`${ob.length - oa.length} graphic${ob.length - oa.length > 1 ? 's' : ''} added`);
+  else if (ob.length < oa.length) out.push(`${oa.length - ob.length} graphic${oa.length - ob.length > 1 ? 's' : ''} removed`);
+  else if (oAdd || oDel) out.push(`${oAdd} graphic${oAdd > 1 ? 's' : ''} changed`);
+  if (JSON.stringify(a.captions || null) !== JSON.stringify(b.captions || null)) out.push('captions changed');
+  if (JSON.stringify(a.grade || null) !== JSON.stringify(b.grade || null)) out.push('grade changed');
+  return out;
+}
+function changeCard(beforeJson) {
+  const before = JSON.parse(beforeJson), lines = describeChange(before, S.edl);
+  if (!lines.length) return;
+  const d = document.createElement('div'); d.className = 'change';
+  d.innerHTML = `<span>${esc(lines.join(' · '))}</span><button class="ghost">Revert</button>`;
+  const after = JSON.stringify(S.edl);
+  d.querySelector('button').onclick = () => {
+    if (JSON.stringify(S.edl) !== after && !confirm('You have edited since. Revert to before this change anyway?')) return;
+    if (mutate((edl) => { for (const k of Object.keys(edl)) delete edl[k]; Object.assign(edl, JSON.parse(beforeJson)); })) { d.classList.add('reverted'); d.querySelector('button').remove(); toast('Reverted · ⌘Z brings it back'); }
+  };
+  $('chat').appendChild(d); $('chat').scrollTop = $('chat').scrollHeight;
+}
+let streamEl = null, turnBefore = null;
 async function send(text) {
   text = (text ?? $('prompt').value).trim();
   if (!text || S.claudeBusy) return;
@@ -1477,7 +1613,7 @@ function renderChatEntry(m) {
 }
 function onClaude(ev) {
   const chat = $('chat');
-  if (ev.type === 'start') { setBusy(true); streamEl = null; }
+  if (ev.type === 'start') { setBusy(true); streamEl = null; turnBefore = JSON.stringify(S.edl); }
   if (ev.type === 'text') {
     if (!streamEl) { streamEl = document.createElement('div'); streamEl.className = 'msg asst'; chat.appendChild(streamEl); }
     streamEl.textContent += ev.text;
@@ -1493,7 +1629,8 @@ function onClaude(ev) {
     const d = document.createElement('div'); d.className = 'msg asst' + (ev.is_error ? ' err' : ''); d.textContent = ev.text || '(done)'; chat.appendChild(d);
     if (ev.cost) { const mm = document.createElement('div'); mm.className = 'meta'; mm.textContent = `${(ev.duration_ms / 1000).toFixed(1)}s · $${ev.cost.toFixed(3)}`; chat.appendChild(mm); }
     streamEl = null; S.sel.pin = null; renderChips(); drawPin();
-    refreshBin(true);
+    refreshBin(true); api('/api/notes').then(setNotes);
+    if (turnBefore) { const b = turnBefore; turnBefore = null; setTimeout(() => changeCard(b), 1500); }
     S.ovBust = Date.now(); buildPlayers(); renderTimeline();
   }
   chat.scrollTop = chat.scrollHeight;
@@ -1606,8 +1743,9 @@ window.addEventListener('keydown', (e) => {
     const a = S.markIn ?? 0, b = S.out;
     if (b - a > 0.05) { S.sel.range = { a, b }; drawRange(); renderChips(); } else toast('Out must be after In');
   }
-  else if (k === 'Escape') { S.sel = { clips: new Set(), overlays: new Set(), words: null, range: null, pin: null, assets: new Set(), cue: null }; renderAll(); drawPin(); }
+  else if (k === 'Escape') { hideAskPill(); S.sel = { clips: new Set(), overlays: new Set(), words: null, range: null, pin: null, assets: new Set(), cue: null }; renderAll(); drawPin(); }
   else if (k === 'c' && !mod) { e.preventDefault(); $('prompt').focus(); }
+  else if (k === '/') { e.preventDefault(); askHere(); }
   else if (k === 'Enter' && selCue()) { e.preventDefault(); editCap(); }
   else if (k === 't' && !mod) { e.preventDefault(); addCaptionAtPlayhead(); }
   else if (k === '=' || k === '+') setZoom(S.pps * 1.25);
@@ -1615,7 +1753,7 @@ window.addEventListener('keydown', (e) => {
 });
 document.querySelectorAll('.left .tabs button').forEach((b) => b.addEventListener('click', () => {
   document.querySelectorAll('.left .tabs button').forEach((x) => x.classList.toggle('on', x === b));
-  ['tx', 'insp', 'bin'].forEach((t) => $('pane-' + t).classList.toggle('hidden', b.dataset.tab !== t));
+  ['tx', 'insp', 'bin', 'ctx'].forEach((t) => $('pane-' + t).classList.toggle('hidden', b.dataset.tab !== t));
   if (b.dataset.tab === 'bin') refreshBin();
 }));
 

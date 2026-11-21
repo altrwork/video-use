@@ -130,6 +130,8 @@ Run it with `Bash` `run_in_background` from the video-use repo root after the fi
 
 While the studio is open, `edl.json` is a live document — keep it valid JSON and render.py-compatible on every write. Studio state (chat log, session id, frame grabs, waveform/thumbnail cache) lives in `<edit>/studio/`. Env knobs: `STUDIO_MODEL`, `STUDIO_ALLOWED_TOOLS` (default `Read Edit Write Glob Grep Bash`), `CLAUDE_BIN`. `python studio/make_demo.py <dir>` builds a synthetic project (macOS `say`, no API key) to try it.
 
+**Project notes.** Two plain files travel with every Studio message, and you should read and maintain them outside the Studio too: `<edit>/context.md` holds facts about this video (people and titles with exact spelling, site/project, dates, numbers — pull them from the user's connected apps rather than asking, and note where each came from); `<client>/preferences.md` holds standing editing preferences for the client (one short line each). Use the facts for caption spelling, lower-thirds and title cards. `brand.md` stays about the look.
+
 ## Cut craft (techniques)
 
 - **Audio-first.** Candidate cuts from word boundaries and silence gaps.
