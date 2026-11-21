@@ -39,27 +39,34 @@ Everything else in this document is a worked example. Deviate whenever the mater
 The skill lives in `video-use/`. User footage lives wherever they put it. All session outputs go into `<videos_dir>/edit/`.
 
 ```
-<videos_dir>/
-├── <source files, untouched>
-└── edit/
-    ├── project.md               ← memory; appended every session
-    ├── takes_packed.md          ← phrase-level transcripts, the LLM's primary reading view
-    ├── edl.json                 ← cut decisions
-    ├── transcripts/<name>.json  ← cached raw Scribe JSON
-    ├── animations/slot_<id>/    ← per-animation source + render + reasoning
-    ├── clips_graded/            ← per-segment extracts with grade + fades
-    ├── master.srt               ← output-timeline subtitles
-    ├── downloads/               ← yt-dlp outputs
-    ├── verify/                  ← debug frames / timeline PNGs
-    ├── preview.mp4
-    └── final.mp4
+<client_dir>/                    ← e.g. video-use-projects/<client>/, reused across every dated shoot
+├── brand.md                     ← optional, client-level: palette, tone, fonts, logo notes
+├── style.json                   ← optional, client-level: subtitle force_style override
+└── <videos_dir>/                ← one dated shoot, e.g. 7.21.26/
+    ├── <source files, untouched>
+    ├── style.json               ← optional, shoot-level: overrides client-level style.json
+    └── edit/
+        ├── project.md               ← memory; appended every session
+        ├── takes_packed.md          ← phrase-level transcripts, the LLM's primary reading view
+        ├── edl.json                 ← cut decisions
+        ├── transcripts/<name>.json  ← cached raw Scribe JSON
+        ├── animations/slot_<id>/    ← per-animation source + render + reasoning
+        ├── clips_graded/            ← per-segment extracts with grade + fades
+        ├── master.srt               ← output-timeline subtitles
+        ├── downloads/               ← yt-dlp outputs
+        ├── verify/                  ← debug frames / timeline PNGs
+        ├── preview.mp4
+        └── final.mp4
 ```
+
+`brand.md` / `style.json` at the client root apply across every dated shoot for that client. A `style.json` inside a specific `<videos_dir>/` overrides the client-level one for just that shoot. See "Subtitles" below for `style.json`'s exact shape.
 
 ## Setup
 
 First-time install lives in `install.md` (clone, deps, ffmpeg, skill registration, API key). Don't re-run it every session; on cold start just verify:
 
 - `ELEVENLABS_API_KEY` resolves — either in the environment or in `.env` at the video-use repo root. If missing, ask the user to paste one and write it to `.env` (never to the user's `<videos_dir>`).
+- If `<videos_dir>/../brand.md` (the client root, one level above the dated shoot folder) exists, read it before asking style questions — it should already answer palette, fonts, tone.
 - `ffmpeg` + `ffprobe` on PATH.
 - Python deps installed (`uv sync` or `pip install -e .` inside the repo).
 - Node.js + npm available if the session needs HyperFrames or Remotion slots. HyperFrames currently requires Node.js 22+.
@@ -204,7 +211,19 @@ Subtitles have three dimensions worth reasoning about: **chunking** (1/2/3/sente
 
 **Worked styles** — pick, adapt, or invent:
 
-**`bold-overlay`** — short-form tech launch, fast-paced social. ~2-word chunks, UPPERCASE, break on punctuation and pauses ≥ 0.3s, grow to 3 words rather than flash a cue < 0.35s (`chunk_words` in `render.py`), Helvetica 18 Bold, white-on-outline, `MarginV=35`. `render.py` ships with this as `SUB_FORCE_STYLE`.
+**`bold-overlay`** — short-form tech launch, fast-paced social. ~2-word chunks, UPPERCASE, break on punctuation and pauses ≥ 0.3s, grow to 3 words rather than flash a cue < 0.35s (`chunk_words` in `render.py`), Helvetica 18 Bold, white-on-outline, `MarginV=35`. `render.py` ships with this as `DEFAULT_SUB_FORCE_STYLE`.
+
+**Per-client style override.** `render.py` checks for `style.json` at three levels, most specific wins: `<edit_dir>/style.json` (this render only), `<videos_dir>/style.json` (this dated shoot), `<videos_dir>/../style.json` (the client root, one level above the dated shoot folders — reused across every shoot for that client). If found, it's used instead of the default. Two shapes:
+
+```json
+{"subtitle_force_style": "FontName=Georgia,FontSize=24,Bold=1,PrimaryColour=&H00E6F1FF,..."}
+```
+or, to override only specific fields and inherit the rest of the default:
+```json
+{"subtitle": {"FontName": "Georgia", "PrimaryColour": "&H00E6F1FF", "MarginV": "60"}}
+```
+
+Pairs with a sibling `brand.md` at the same level (palette, tone, fonts, logo/watermark notes) — read it during Setup, before asking style questions, if it exists. Neither file is required; without them `render.py` falls back to `DEFAULT_SUB_FORCE_STYLE` exactly as before.
 
 ```
 FontName=Helvetica,FontSize=18,Bold=1,
@@ -216,6 +235,17 @@ Alignment=2,MarginV=35
 **`natural-sentence`** (if you invent this mode) — narrative, documentary, education. 4–7 word chunks, sentence case, break on natural pauses, `MarginV=60–80`, larger font for readability, slightly wider max-width. No shipped force_style — design one if you need it.
 
 Invent a third style if neither fits. Hard rules: subtitles LAST (Rule 1), output-timeline offsets (Rule 5).
+
+**Platform safe zones are a testable constraint, not a guess.** "MarginV=90 lands ~30%
+up" and similar rules of thumb are starting points, not guarantees — libass's script-unit
+scaling doesn't always behave the way the math suggests, and measuring against real
+footage full of light clothing/badges/backgrounds is unreliable (false-positive white
+pixels everywhere). To actually verify a caption sits inside a safe zone: render the
+force_style against a **plain black background** with the widest real caption line from
+this video's `master.srt`, burn a `drawbox` at the safe-zone boundary on top, and measure
+the rendered text's pixel bounds programmatically (PIL/numpy — find the row/col extent of
+near-white pixels) rather than eyeballing a compressed preview image. Do this once per
+client style, and again whenever a line runs unusually long.
 
 ## Animations (when requested)
 
