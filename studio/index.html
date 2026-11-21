@@ -224,7 +224,8 @@ kbd{font-family:ui-monospace,Menlo,monospace;font-size:10.5px;background:var(--p
       <div class="dd">
         <button data-mode="draft">Draft<small>720p, ultrafast — check cuts</small></button>
         <button data-mode="preview">Preview<small>1080p, CRF 22 — evaluable</small></button>
-        <button data-mode="final">Final<small>full quality → final.mp4</small></button>
+        <button data-mode="final">Final<small>1080p, loudness-normalised → final.mp4</small></button>
+        <button data-mode="source">Source quality<small>original resolution &amp; colour, near-lossless → source.mp4</small></button>
       </div>
     </div>
   </div>
@@ -702,7 +703,8 @@ function buildPlayers() {
     stage.insertBefore(v, $('cap')); ovPlayers.push({ el: v, ov, i }); placeOverlay(v, ov);
   });
   sizeStage();
-  const g = S.edl.grade || 'none';
+  // render.py only applies a look when the user asked for one (grade_request); a crop/scale-only grade is not a look
+  const g = (S.edl.grade_request && S.edl.grade) || 'none';
   const css = GRADE_CSS[g] ?? 'contrast(1.04)';
   Object.values(players).forEach((v) => (v.style.filter = css));
   $('gradeBadge').textContent = g && g !== 'none' ? `grade: ${g.length > 24 ? 'custom' : g} (approx.)` : '';
@@ -1716,7 +1718,7 @@ function setMonitor(m) {
   $('stage').classList.toggle('hidden', m !== 'live'); $('rendered').classList.toggle('hidden', m !== 'render');
   if (m === 'render') {
     pause();
-    const f = S.lastRender?.file || (S.renders.preview ? 'edit/preview.mp4' : S.renders.final ? 'edit/final.mp4' : S.renders.draft ? 'edit/draft.mp4' : null);
+    const f = S.lastRender?.file || (S.renders.preview ? 'edit/preview.mp4' : S.renders.final ? 'edit/final.mp4' : S.renders.source ? 'edit/source.mp4' : S.renders.draft ? 'edit/draft.mp4' : null);
     if (!f) { toast('Nothing rendered yet — use Render ▾'); return setMonitor('live'); }
     const url = U('/file?path=') + encodeURIComponent(f) + '&token=' + TOKEN + '&v=' + (S.lastRender?.v || Date.now());
     if ($('rvid').getAttribute('src') !== url) $('rvid').src = url;

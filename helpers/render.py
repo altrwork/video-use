@@ -118,6 +118,57 @@ def run(cmd: list[str], quiet: bool = False) -> None:
     subprocess.run(cmd, check=True)
 
 
+# -------- Colour grading only on request ---------------------------------------
+#
+# The EDL's `grade` field doubles as the place reframes live (a 9:16 crop is a
+# `crop=…,scale=…` chain), so it is split: geometry filters always apply, look
+# filters (anything that changes colour, contrast, sharpness or noise) apply only
+# when the EDL records that the user asked for a look, in `grade_request`.
+GEOMETRY_FILTERS = {"crop", "scale", "pad", "transpose", "hflip", "vflip", "rotate", "setsar", "setdar"}
+
+
+def split_filters(chain: str) -> list[str]:
+    """Split an ffmpeg filter chain on top-level commas (not inside quotes, brackets or after a backslash)."""
+    out, cur, quote, depth, i = [], [], False, 0, 0
+    while i < len(chain):
+        c = chain[i]
+        if c == "\\" and i + 1 < len(chain):
+            cur.append(chain[i:i + 2]); i += 2; continue
+        if c == "'":
+            quote = not quote
+        elif not quote and c == "[":
+            depth += 1
+        elif not quote and c == "]":
+            depth -= 1
+        if c == "," and not quote and depth == 0:
+            out.append("".join(cur)); cur = []
+        else:
+            cur.append(c)
+        i += 1
+    out.append("".join(cur))
+    return [f.strip() for f in out if f.strip()]
+
+
+def filter_name(f: str) -> str:
+    return re.split(r"[=@\s]", re.sub(r"^\[[^\]]*\]", "", f).strip(), maxsplit=1)[0]
+
+
+def gate_grade(edl: dict) -> tuple[str | None, list[str]]:
+    """Returns (grade field to use, look filters that were dropped). Without
+    `grade_request` only geometry survives and "auto"/presets are ignored."""
+    grade = edl.get("grade")
+    if not grade or str(edl.get("grade_request") or "").strip():
+        return grade, []
+    if grade in ("none",):
+        return None, []
+    if grade == "auto" or re.fullmatch(r"[a-zA-Z0-9_\-]+", str(grade)):
+        return None, [str(grade)]
+    keep, dropped = [], []
+    for f in split_filters(str(grade)):
+        (keep if filter_name(f) in GEOMETRY_FILTERS else dropped).append(f)
+    return (",".join(keep) or None), dropped
+
+
 def resolve_grade_filter(grade_field: str | None) -> str:
     """The EDL's 'grade' field can be a preset name, a raw ffmpeg filter, or 'auto'.
 
@@ -197,6 +248,64 @@ def is_hdr_source(video: Path) -> bool:
         return out.stdout.strip() in HDR_TRANSFERS
     except subprocess.CalledProcessError:
         return False
+
+
+def probe_color(video: Path) -> dict:
+    """pix_fmt and colour tags of the first video stream ({} if unknown)."""
+    try:
+        out = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+             "stream=pix_fmt,color_range,color_space,color_transfer,color_primaries,width,height",
+             "-of", "json", str(video)],
+            capture_output=True, text=True, check=True,
+        )
+        return (json.loads(out.stdout).get("streams") or [{}])[0]
+    except (subprocess.CalledProcessError, json.JSONDecodeError, OSError):
+        return {}
+
+
+def bit_depth(pix_fmt: str | None) -> int:
+    m = re.search(r"p(\d{2})(le|be)?$", pix_fmt or "")
+    return int(m.group(1)) if m else 8
+
+
+def color_tag_args(c: dict) -> list[str]:
+    """Write the colour tags explicitly so players don't have to guess."""
+    args = []
+    for opt, key in (("-color_primaries", "color_primaries"), ("-color_trc", "color_transfer"),
+                     ("-colorspace", "color_space"), ("-color_range", "color_range")):
+        v = c.get(key)
+        if v and v != "unknown":
+            args += [opt, v]
+    return args
+
+
+SDR709 = {"color_primaries": "bt709", "color_transfer": "bt709", "color_space": "bt709", "color_range": "tv"}
+
+
+def video_profile(sources: list[Path], quality: str) -> dict:
+    """One encoder setup for the whole render (the -c copy concat needs every
+    segment encoded the same way).
+
+    quality: "draft" | "preview" | "final" | "source".
+    "source" keeps the source resolution, keeps HDR / 10-bit when every source has
+    it, and encodes at a visually lossless setting.
+    """
+    first = probe_color(sources[0]) if sources else {}
+    if quality == "source":
+        colors = [probe_color(s) for s in sources]
+        hdr = bool(colors) and all(c.get("color_transfer") in HDR_TRANSFERS for c in colors)
+        deep = bool(colors) and all(bit_depth(c.get("pix_fmt")) >= 10 for c in colors)
+        if hdr or deep:
+            return {"codec": ["-c:v", "libx265", "-preset", "slow", "-crf", "14", "-tag:v", "hvc1",
+                              "-x265-params", "log-level=error"],
+                    "pix_fmt": "yuv420p10le", "tonemap": False, "scale": False,
+                    "tags": first, "audio": "320k"}
+        return {"codec": ["-c:v", "libx264", "-preset", "slow", "-crf", "12"], "pix_fmt": "yuv420p",
+                "tonemap": True, "scale": False, "tags": None, "audio": "320k"}
+    preset, crf = {"draft": ("ultrafast", "28"), "preview": ("medium", "22")}.get(quality, ("fast", "20"))
+    return {"codec": ["-c:v", "libx264", "-preset", preset, "-crf", crf], "pix_fmt": "yuv420p",
+            "tonemap": True, "scale": True, "tags": None, "audio": "192k"}
 
 
 def is_portrait_source(video: Path) -> bool:
@@ -308,6 +417,7 @@ def extract_segment(
     draft: bool = False,
     rate: str | None = None,
     mute: bool = False,
+    profile: dict | None = None,
 ) -> None:
     """Extract a cut range as its own MP4 with grade + 30ms audio fades baked in.
 
@@ -324,32 +434,30 @@ def extract_segment(
     """
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
+    if profile is None:
+        profile = video_profile([source], "draft" if draft else "preview" if preview else "final")
     portrait = is_portrait_source(source)
     if draft:
-        scale = "scale=-2:1280" if portrait else "scale=1280:-2"
+        scale = "scale=-2:1280:flags=lanczos" if portrait else "scale=1280:-2:flags=lanczos"
     else:
-        scale = "scale=-2:1920" if portrait else "scale=1920:-2"
+        scale = "scale=-2:1920:flags=lanczos" if portrait else "scale=1920:-2:flags=lanczos"
 
     vf_parts: list[str] = []
-    if is_hdr_source(source):
+    tonemapped = profile["tonemap"] and is_hdr_source(source)
+    if tonemapped:
         vf_parts.append(TONEMAP_CHAIN)
-    vf_parts.append(scale)
+    if profile["scale"]:
+        vf_parts.append(scale)
     if grade_filter:
         vf_parts.append(grade_filter)
-    vf = ",".join(vf_parts)
+    vf = ",".join(vf_parts) or "null"
+    tags = profile["tags"] if profile["tags"] is not None else (SDR709 if tonemapped else (probe_color(source) or SDR709))
 
     # 30ms audio fades at both edges (Rule 3) — prevent pops
     fade_out_start = max(0.0, duration - 0.03)
     af = f"afade=t=in:st=0:d=0.03,afade=t=out:st={fade_out_start:.3f}:d=0.03"
     if mute:
         af = f"volume=0,{af}"
-
-    if draft:
-        preset, crf = "ultrafast", "28"
-    elif preview:
-        preset, crf = "medium", "22"
-    else:
-        preset, crf = "fast", "20"
 
     # Frame rate: use the rate the caller resolved once for the whole render
     # (every segment must share it — concat -c copy in Rule 2 requires a uniform
@@ -364,9 +472,9 @@ def extract_segment(
         "-t", f"{duration:.3f}",
         "-vf", vf,
         "-af", af,
-        "-c:v", "libx264", "-preset", preset, "-crf", crf,
-        "-pix_fmt", "yuv420p", "-r", out_rate,
-        "-c:a", "aac", "-b:a", "192k", "-ar", "48000",
+        *profile["codec"],
+        "-pix_fmt", profile["pix_fmt"], "-r", out_rate, *color_tag_args(tags),
+        "-c:a", "aac", "-b:a", profile["audio"], "-ar", "48000",
         "-movflags", "+faststart",
         str(out_path),
     ]
@@ -379,6 +487,7 @@ def extract_all_segments(
     preview: bool,
     draft: bool = False,
     fps: str | None = None,
+    quality: str | None = None,
 ) -> list[Path]:
     """Extract every EDL range into edit_dir/clips_graded/seg_NN.mp4.
     Returns the ordered list of segment paths.
@@ -387,11 +496,13 @@ def extract_all_segments(
     `auto_grade_for_clip` and apply a per-segment subtle correction.
     Otherwise, apply the same preset/raw filter to every segment.
     """
-    resolved = resolve_grade_filter(edl.get("grade"))
+    quality = quality or ("draft" if draft else "preview" if preview else "final")
+    grade, dropped = gate_grade(edl)
+    if dropped:
+        print("colour grade skipped (no grade_request in the EDL — only grade when the user asks): " + ", ".join(dropped))
+    resolved = resolve_grade_filter(grade)
     is_auto = resolved == "__AUTO__"
-    clips_dir = edit_dir / (
-        "clips_draft" if draft else ("clips_preview" if preview else "clips_graded")
-    )
+    clips_dir = edit_dir / {"draft": "clips_draft", "preview": "clips_preview", "source": "clips_source"}.get(quality, "clips_graded")
     clips_dir.mkdir(parents=True, exist_ok=True)
 
     ranges = edl["ranges"]
@@ -410,6 +521,11 @@ def extract_all_segments(
     else:
         out_rate = "24"
 
+    used = list(dict.fromkeys(resolve_path(sources[r["source"]], edit_dir) for r in ranges))
+    profile = video_profile(used, quality)
+    if quality == "source":
+        print(f"source quality: {' '.join(profile['codec'][1:2])} {profile['pix_fmt']}, source resolution"
+              + ("" if profile["tonemap"] else ", HDR kept"))
     seg_paths: list[Path] = []
     print(f"extracting {len(ranges)} segment(s) → {clips_dir.name}/  @ {out_rate} fps"
           f"{' (forced)' if fps is not None else ' (from source)'}")
@@ -433,7 +549,7 @@ def extract_all_segments(
         print(f"  [{i:02d}] {src_name}  {start:7.2f}-{end:7.2f}  ({duration:5.2f}s)  {note}{'  [MUTED]' if mute else ''}")
         if is_auto:
             print(f"        grade: {seg_filter or '(none)'}")
-        extract_segment(src_path, start, duration, seg_filter, out_path, preview=preview, draft=draft, rate=out_rate, mute=mute)
+        extract_segment(src_path, start, duration, seg_filter, out_path, preview=preview, draft=draft, rate=out_rate, mute=mute, profile=profile)
         seg_paths.append(out_path)
 
     return seg_paths
@@ -816,13 +932,16 @@ def build_final_composite(
     out_path: Path,
     edit_dir: Path,
     force_style: str = DEFAULT_SUB_FORCE_STYLE,
+    profile: dict | None = None,
 ) -> None:
     """Final pass: base → overlays (PTS-shifted) → subtitles LAST → out.
 
     If there are no overlays and no subtitles, just copy base to out.
     """
     has_overlays = bool(overlays)
-    base_dims = probe_dims(base_path) if any(ov.get("w") is not None or ov.get("x") is not None for ov in overlays) else (0, 0)
+    base_dims = probe_dims(base_path) if overlays else (0, 0)
+    # Unplaced graphics are made for the standard 1920 frame; at source resolution scale them to match.
+    native_k = max(base_dims) / 1920 if overlays and max(base_dims) else 1.0
     has_subs = subtitles_path is not None and subtitles_path.exists()
 
     if not has_overlays and not has_subs:
@@ -845,6 +964,8 @@ def build_final_composite(
             bw, bh = base_dims
             pw = max(2, int(round(float(ov["w"]) * bw / 2)) * 2)
             place = f",scale={pw}:-2"
+        elif abs(native_k - 1.0) > 0.01:
+            place = f",scale=trunc(iw*{native_k:.4f}/2)*2:-2"
         filter_parts.append(f"[{idx}:v]setpts=PTS-STARTPTS+{t}/TB{place}[a{idx}]")
 
     # Chain overlays on top of base
@@ -882,8 +1003,8 @@ def build_final_composite(
         "-filter_complex", filter_complex,
         "-map", out_label,
         "-map", "0:a",
-        "-c:v", "libx264", "-preset", "fast", "-crf", "18",
-        "-pix_fmt", "yuv420p",
+        *(profile["codec"] if profile else ["-c:v", "libx264", "-preset", "fast", "-crf", "18"]),
+        "-pix_fmt", profile["pix_fmt"] if profile else "yuv420p", *color_tag_args(probe_color(base_path)),
         "-c:a", "copy",
         "-movflags", "+faststart",
         str(out_path),
@@ -909,6 +1030,17 @@ def main() -> None:
         "--draft",
         action="store_true",
         help="Draft mode: 720p, ultrafast, CRF 28 — cut-point verification only.",
+    )
+    ap.add_argument(
+        "--source-quality",
+        action="store_true",
+        help="Keep the source's resolution, frame rate and (when every source has it) HDR / 10-bit; "
+             "visually lossless encode; no loudness change unless --loudnorm.",
+    )
+    ap.add_argument(
+        "--loudnorm",
+        action="store_true",
+        help="Normalize loudness even with --source-quality.",
     )
     ap.add_argument(
         "--build-subtitles",
@@ -949,18 +1081,18 @@ def main() -> None:
     edit_dir = edl_path.parent
     out_path = args.output.resolve()
 
+    quality = "source" if args.source_quality else "draft" if args.draft else "preview" if args.preview else "final"
+    no_loudnorm = args.no_loudnorm or (args.source_quality and not args.loudnorm)
+
     # 1. Extract per-segment (auto-grade per range if EDL grade is "auto")
     segment_paths = extract_all_segments(
-        edl, edit_dir, preview=args.preview, draft=args.draft, fps=args.fps
+        edl, edit_dir, preview=args.preview, draft=args.draft, fps=args.fps, quality=quality
     )
+    used = list(dict.fromkeys(resolve_path(edl["sources"][r["source"]], edit_dir) for r in edl["ranges"]))
+    profile = video_profile(used, quality)
 
     # 2. Concat → base
-    if args.draft:
-        base_name = "base_draft.mp4"
-    elif args.preview:
-        base_name = "base_preview.mp4"
-    else:
-        base_name = "base.mp4"
+    base_name = {"draft": "base_draft.mp4", "preview": "base_preview.mp4", "source": "base_source.mp4"}.get(quality, "base.mp4")
     base_path = edit_dir / base_name
     concat_segments(segment_paths, base_path, edit_dir)
 
@@ -976,13 +1108,13 @@ def main() -> None:
     # 4. Composite (overlays + subtitles LAST) → intermediate (pre-loudnorm) path
     overlays = edl.get("overlays") or []
     force_style = load_subtitle_style(edit_dir)
-    if args.no_loudnorm:
+    if no_loudnorm:
         # Composite directly to final output
-        build_final_composite(base_path, overlays, subs_path, out_path, edit_dir, force_style)
+        build_final_composite(base_path, overlays, subs_path, out_path, edit_dir, force_style, profile)
     else:
         # Composite to a temp file, then run loudnorm → final output
         tmp_composite = out_path.with_suffix(".prenorm.mp4")
-        build_final_composite(base_path, overlays, subs_path, tmp_composite, edit_dir, force_style)
+        build_final_composite(base_path, overlays, subs_path, tmp_composite, edit_dir, force_style, profile)
         print("loudness normalization → social-ready (-14 LUFS / -1 dBTP / LRA 11)")
         apply_loudnorm_two_pass(tmp_composite, out_path, preview=args.draft)
         tmp_composite.unlink(missing_ok=True)

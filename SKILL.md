@@ -83,7 +83,7 @@ Helpers (`helpers/transcribe.py`, `helpers/render.py`, etc.) live alongside this
 - **`transcribe_batch.py <videos_dir>`** — 4-worker parallel transcription. Use for multi-take.
 - **`pack_transcripts.py --edit-dir <dir>`** — `transcripts/*.json` → `takes_packed.md` (phrase-level, break on silence ≥ 0.5s).
 - **`timeline_view.py <video> <start> <end>`** — filmstrip + waveform PNG. On-demand visual drill-down. **Not a scan tool** — use it at decision points, not constantly.
-- **`render.py <edl.json> -o <out>`** — per-segment extract → concat → overlays (PTS-shifted) → subtitles LAST. `--preview` for 720p fast. `--build-subtitles` to generate master.srt inline.
+- **`render.py <edl.json> -o <out>`** — per-segment extract → concat → overlays (PTS-shifted) → subtitles LAST. `--preview` for 720p fast. `--source-quality` keeps the source's resolution, frame rate, colour and HDR with a near-lossless encode and no loudness change: use it when the user wants the edit to look exactly like the upload. `--build-subtitles` to generate master.srt inline.
 - **`grade.py <in> -o <out>`** — ffmpeg filter chain grade. Presets + `--filter '<raw>'` for custom.
 - **`studio/server.py <edit_dir>`** — Video Use Studio: a live, Premiere-style editor for `edl.json` in the browser. See "Studio" below.
 
@@ -205,6 +205,8 @@ Mental model is ASC CDL. Per channel: `out = (in * slope + offset) ** power`, th
 - **`warm_cinematic`** — retro/technical, subtle teal/orange split, desaturated. Shipped in a real launch video. Safe for talking heads.
 - **`neutral_punch`** — minimal corrective: contrast bump + gentle S-curve. No hue shifts.
 - **`none`** — straight copy. Default when the user hasn't asked.
+
+**Hard rule: never change the look on your own.** No preset, no "minimal corrective" grade, no `auto`, unless the user asked for a look in this conversation. When they did, put their own words in `edl.grade_request` (e.g. `"grade_request": "make it warmer and punchier"`). render.py drops every colour, contrast, sharpness and noise filter from `grade` when `grade_request` is missing; crops, scales, pads and flips in `grade` (a 9:16 reframe) always apply.
 
 For anything else — portraiture, nature, product, music video, documentary — invent your own chain. `grade.py --filter '<raw ffmpeg>'` accepts any filter string.
 
@@ -350,6 +352,7 @@ Match the source unless the user asked for something specific. Common targets: `
      "beat": "SOLUTION", "quote": "...", "reason": "Only take without the false start."}
   ],
   "grade": "warm_cinematic",
+  "grade_request": "give it a warm, cinematic look",
   "overlays": [
     {"file": "edit/animations/slot_1/render.mp4", "start_in_output": 0.0, "duration": 5.0}
   ],
@@ -358,7 +361,7 @@ Match the source unless the user asked for something specific. Common targets: `
 }
 ```
 
-`grade` is a preset name or raw ffmpeg filter. `overlays` are rendered animation clips. `subtitles` is optional and applied LAST.
+`grade` is a preset name or raw ffmpeg filter; its look filters only apply when `grade_request` (the user's words) is set. `overlays` are rendered animation clips. `subtitles` is optional and applied LAST.
 
 **Edited captions (optional `captions`).** Without it, `--build-subtitles` auto-chunks the transcript. With it, those cues are used instead (the Studio writes this when the user edits a caption; you can too):
 
