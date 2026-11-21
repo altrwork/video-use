@@ -291,7 +291,8 @@ const fmt = (t, short) => {
   const m = Math.floor(t / 60), s = t - m * 60;
   return `${String(m).padStart(2, '0')}:${s.toFixed(short ? 1 : 2).padStart(short ? 4 : 5, '0')}`;
 };
-const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const num = (v) => (Number.isFinite(+v) ? +v : 0);
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const r3 = (v) => Math.round(v * 1000) / 1000;
 function toast(msg, ms = 2600) {
@@ -356,7 +357,7 @@ async function load() {
 function setAssets(name, a) {
   S.assets[name] = a;
   if (a.thumbs && (!S.imgs[name] || S.imgs[name].src.indexOf(a.thumbs.url) < 0)) {
-    const img = new Image(); img.onload = () => renderTimeline(); img.src = a.thumbs.url; S.imgs[name] = img;
+    const img = new Image(); img.onload = () => renderTimeline(); img.src = a.thumbs.url + '&token=' + TOKEN; S.imgs[name] = img;
   }
 }
 function edlKey(e) { return JSON.stringify({ r: e.ranges, o: e.overlays, g: e.grade, s: e.subtitles, src: e.sources }); }
@@ -484,7 +485,7 @@ function buildPlayers() {
   for (const name of Object.keys(S.edl.sources || {})) {
     if (players[name]) continue;
     const v = document.createElement('video');
-    v.className = 'src'; v.preload = 'auto'; v.playsInline = true; v.src = '/media/' + encodeURIComponent(name);
+    v.className = 'src'; v.preload = 'auto'; v.playsInline = true; v.src = '/media/' + encodeURIComponent(name) + '?token=' + TOKEN;
     v.addEventListener('loadeddata', () => { if (S.active >= 0 && S.clips[S.active]?.src === name) drawStage(); });
     stage.insertBefore(v, $('cap')); players[name] = v;
   }
@@ -492,7 +493,7 @@ function buildPlayers() {
   (S.edl.overlays || []).forEach((ov, i) => {
     const v = document.createElement('video');
     v.className = 'ov'; v.muted = true; v.preload = 'auto'; v.playsInline = true;
-    v.src = '/overlay?path=' + encodeURIComponent(ov.file);
+    v.src = '/overlay?path=' + encodeURIComponent(ov.file) + '&token=' + TOKEN;
     stage.insertBefore(v, $('cap')); ovPlayers.push({ el: v, ov, i });
   });
   sizeStage();
@@ -888,8 +889,8 @@ function renderInspector() {
     const r = S.edl.ranges[ci], c = S.clips[ci];
     h += `<h4>Clip ${ci + 1} · output ${fmt(c.off)}–${fmt(c.off + c.dur)}</h4>
       <div class="field"><label>Source</label><select data-f="source">${Object.keys(S.edl.sources).map((s) => `<option${s === r.source ? ' selected' : ''}>${esc(s)}</option>`).join('')}</select></div>
-      <div class="row"><div class="field"><label>In (source s)</label><input type="number" step="0.01" data-f="start" value="${r.start}"></div>
-      <div class="field"><label>Out (source s)</label><input type="number" step="0.01" data-f="end" value="${r.end}"></div></div>
+      <div class="row"><div class="field"><label>In (source s)</label><input type="number" step="0.01" data-f="start" value="${num(r.start)}"></div>
+      <div class="field"><label>Out (source s)</label><input type="number" step="0.01" data-f="end" value="${num(r.end)}"></div></div>
       <div class="field"><label>Beat</label><input data-f="beat" value="${esc(r.beat || '')}"></div>
       <div class="field"><label>Quote</label><textarea data-f="quote">${esc(r.quote || '')}</textarea></div>
       <div class="field"><label>Reason</label><textarea data-f="reason">${esc(r.reason || '')}</textarea></div>`;
@@ -897,8 +898,8 @@ function renderInspector() {
     const o = S.edl.overlays[oi];
     h += `<h4>Overlay ${oi + 1}</h4>
       <div class="field"><label>File</label><input data-o="file" value="${esc(o.file)}"></div>
-      <div class="row"><div class="field"><label>Start (output s)</label><input type="number" step="0.01" data-o="start_in_output" value="${o.start_in_output}"></div>
-      <div class="field"><label>Duration</label><input type="number" step="0.01" data-o="duration" value="${o.duration}"></div></div>`;
+      <div class="row"><div class="field"><label>Start (output s)</label><input type="number" step="0.01" data-o="start_in_output" value="${num(o.start_in_output)}"></div>
+      <div class="field"><label>Duration</label><input type="number" step="0.01" data-o="duration" value="${num(o.duration)}"></div></div>`;
   } else {
     h += `<div class="meta">Select a clip or overlay to edit its fields.</div>`;
   }
@@ -1069,7 +1070,7 @@ function setMonitor(m) {
     pause();
     const f = S.lastRender?.file || (S.renders.preview ? 'edit/preview.mp4' : S.renders.final ? 'edit/final.mp4' : S.renders.draft ? 'edit/draft.mp4' : null);
     if (!f) { toast('Nothing rendered yet — use Render ▾'); return setMonitor('live'); }
-    const url = '/file?path=' + encodeURIComponent(f) + '&v=' + (S.lastRender?.v || Date.now());
+    const url = '/file?path=' + encodeURIComponent(f) + '&token=' + TOKEN + '&v=' + (S.lastRender?.v || Date.now());
     if ($('rvid').getAttribute('src') !== url) $('rvid').src = url;
   } else $('rvid').pause();
 }
