@@ -526,20 +526,104 @@ def chunk_words(words: list[dict], max_words: int = CHUNK_WORDS) -> list[list[di
     return chunks
 
 
-def build_master_srt(edl: dict, edit_dir: Path, out_path: Path, max_words: int = CHUNK_WORDS) -> None:
+# ASS script space the subtitles filter uses for SRT input (libass PlayRes).
+# Caption positions in the EDL are frame fractions; \pos needs these units.
+SRT_PLAY_RES = (384, 288)
+
+
+def caption_entries_from_cues(edl: dict, edit_dir: Path) -> list[tuple[float, float, str]]:
+    """Output-timeline caption entries from edl["captions"]["cues"].
+
+    Cues are anchored in SOURCE time ({source, start, end}) so they follow
+    their clip through trims and reorders. A cue spanning a cut is split
+    into one piece per kept range. Without "text", a cue shows the
+    transcript words inside each piece (UPPERCASE), so cuts stay correct;
+    with "text" it shows exactly that. "pos" ([x, y] frame fractions, text
+    centre) overrides edl["captions"]["pos"], which overrides the style's
+    default bottom placement.
+    """
+    caps = edl.get("captions") or {}
+    cues = [c for c in caps.get("cues") or [] if isinstance(c, dict)]
+    default_pos = caps.get("pos")
+    transcripts: dict[str, dict] = {}
+
+    def words_for(src: str) -> dict:
+        if src not in transcripts:
+            tp = edit_dir / "transcripts" / f"{src}.json"
+            transcripts[src] = json.loads(tp.read_text()) if tp.exists() else {}
+        return transcripts[src]
+
+    entries: list[tuple[float, float, str]] = []
+    offset = 0.0
+    for r in edl["ranges"]:
+        rs, re_ = float(r["start"]), float(r["end"])
+        if not r.get("mute"):
+            for c in cues:
+                if c.get("source") != r["source"]:
+                    continue
+                a, b = max(rs, float(c["start"])), min(re_, float(c["end"]))
+                if b - a < 0.05:
+                    continue
+                if c.get("text") is not None:
+                    text = str(c["text"])
+                else:
+                    ws = _words_in_range(words_for(r["source"]), a, b)
+                    text = re.sub(r"\s+", " ", " ".join((w.get("text") or "").strip() for w in ws)).strip()
+                    text = text.rstrip(",;:").upper()
+                text = text.replace("{", "(").replace("}", ")").replace("\n", "\\N").strip()
+                if not text:
+                    continue
+                pos = c.get("pos") or default_pos
+                if pos:
+                    x, y = float(pos[0]) * SRT_PLAY_RES[0], float(pos[1]) * SRT_PLAY_RES[1]
+                    text = f"{{\\an5\\pos({x:.0f},{y:.0f})}}" + text
+                entries.append((a - rs + offset, b - rs + offset, text))
+        offset += re_ - rs
+    return entries
+
+
+def _ass_timestamp(seconds: float) -> str:
+    cs = max(0, int(round(seconds * 100)))
+    return f"{cs // 360000}:{cs // 6000 % 60:02d}:{cs // 100 % 60:02d}.{cs % 100:02d}"
+
+
+def write_ass(entries: list[tuple[float, float, str]], out_path: Path) -> None:
+    """Minimal ASS script in the same 384x288 space libass uses for SRT, so
+    force_style (style.json) applies identically and \\pos tags work (libass
+    ignores \\pos in SRT input)."""
+    head = (
+        "[Script Info]\nScriptType: v4.00+\nPlayResX: 384\nPlayResY: 288\n"
+        "ScaledBorderAndShadow: yes\nWrapStyle: 0\n\n[V4+ Styles]\n"
+        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, "
+        "Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, "
+        "Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n"
+        "Style: Default,Arial,16,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,1,0,2,10,10,10,1\n\n"
+        "[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+    )
+    lines = [f"Dialogue: 0,{_ass_timestamp(a)},{_ass_timestamp(b)},Default,,0,0,0,,{t}" for a, b, t in entries]
+    out_path.write_text(head + "\n".join(lines) + "\n")
+
+
+def build_master_srt(edl: dict, edit_dir: Path, out_path: Path, max_words: int = CHUNK_WORDS) -> Path:
     """Build an output-timeline SRT from per-source transcripts.
+
+    If edl["captions"]["cues"] exists (hand-edited captions, e.g. from the
+    Studio), those are used instead of auto-chunking — see
+    caption_entries_from_cues.
 
     - phrase-aware ~max_words-word chunks (see chunk_words)
     - UPPERCASE text
     - Output times computed as word.start - segment_start + segment_offset
     """
     transcripts_dir = edit_dir / "transcripts"
-    sources = edl["sources"]
 
     entries: list[tuple[float, float, str]] = []
     seg_offset = 0.0
+    cue_mode = bool((edl.get("captions") or {}).get("cues"))
+    if cue_mode:
+        entries = caption_entries_from_cues(edl, edit_dir)
 
-    for r in edl["ranges"]:
+    for r in ([] if cue_mode else edl["ranges"]):
         src_name = r["source"]
         seg_start = float(r["start"])
         seg_end = float(r["end"])
@@ -581,10 +665,17 @@ def build_master_srt(edl: dict, edit_dir: Path, out_path: Path, max_words: int =
     for i, (a, b, t) in enumerate(entries, start=1):
         lines.append(str(i))
         lines.append(f"{_srt_timestamp(a)} --> {_srt_timestamp(b)}")
-        lines.append(t)
+        lines.append(re.sub(r"\{\\[^}]*\}", "", t).replace("\\N", "\n"))  # plain SRT: no ASS tags
         lines.append("")
     out_path.write_text("\n".join(lines))
     print(f"master SRT → {out_path.name} ({len(entries)} cues)")
+    if cue_mode:
+        # positioned / edited captions need ASS; the SRT above stays as a plain-text sidecar
+        ass_path = out_path.with_suffix(".ass")
+        write_ass(entries, ass_path)
+        print(f"master ASS → {ass_path.name} (edited captions)")
+        return ass_path
+    return out_path
 
 
 # -------- Loudness normalization (social-ready audio) -----------------------
@@ -847,9 +938,9 @@ def main() -> None:
     # 3. Subtitles: build if requested, resolve final path
     subs_path: Path | None = None
     if not args.no_subtitles:
-        if args.build_subtitles:
+        if args.build_subtitles or (edl.get("captions") or {}).get("cues"):
             subs_path = edit_dir / "master.srt"
-            build_master_srt(edl, edit_dir, subs_path, max_words=args.max_caption_words)
+            subs_path = build_master_srt(edl, edit_dir, subs_path, max_words=args.max_caption_words)
         elif edl.get("subtitles"):
             subs_path = resolve_subtitles_path(edl["subtitles"], edit_dir)
 

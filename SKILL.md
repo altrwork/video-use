@@ -356,6 +356,23 @@ Match the source unless the user asked for something specific. Common targets: `
 
 `grade` is a preset name or raw ffmpeg filter. `overlays` are rendered animation clips. `subtitles` is optional and applied LAST.
 
+**Edited captions (optional `captions`).** Without it, `--build-subtitles` auto-chunks the transcript. With it, those cues are used instead (the Studio writes this when the user edits a caption; you can too):
+
+```json
+"captions": {
+  "pos": [0.5, 0.78],
+  "cues": [
+    {"source": "C0103", "start": 2.42, "end": 3.10},
+    {"source": "C0103", "start": 3.10, "end": 4.05, "text": "90% WASTED", "pos": [0.3, 0.16]}
+  ]
+}
+```
+
+- `start`/`end` are **source** seconds, so a cue follows its clip through trims and reorders. A cue spanning a cut is split per kept range.
+- No `text` → the transcript words inside the cue (UPPERCASE), so cuts stay correct. `text` → exactly that (`\n` = line break).
+- `pos` = caption centre as frame fractions; per-cue `pos` beats `captions.pos`, which beats the style's bottom placement. Edited captions render through an ASS file next to the SRT (libass ignores `\pos` in SRT).
+- Font, size and colours still come from `style.json`. Keep cues non-overlapping.
+
 ## Memory — `project.md`
 
 Append one section per session at `<edit>/project.md`:

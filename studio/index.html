@@ -96,8 +96,14 @@ kbd{font-family:ui-monospace,Menlo,monospace;font-size:10.5px;background:var(--p
 .stage video.src,.stage video.ov{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;visibility:hidden}
 .stage video.src.on,.stage video.ov.on{visibility:visible}
 .stage video.ov{pointer-events:none;mix-blend-mode:normal}
-.cap{position:absolute;left:0;right:0;text-align:center;pointer-events:none;font-weight:800;font-family:Helvetica,Arial,sans-serif;color:#fff;
-  text-shadow:0 0 3px #000,0 0 3px #000,2px 2px 0 #000,-2px -2px 0 #000,2px -2px 0 #000,-2px 2px 0 #000;letter-spacing:.02em}
+.cap{position:absolute;left:50%;transform:translateX(-50%);max-width:94%;width:max-content;text-align:center;font-weight:800;font-family:Helvetica,Arial,sans-serif;color:#fff;
+  -webkit-text-stroke:2px #000;paint-order:stroke fill;white-space:pre-wrap;line-height:1.15;cursor:move;border-radius:4px;padding:0 4px;outline:1px dashed transparent;z-index:3}
+.cap:empty:not(.editing){display:none}
+.cap.editing{min-width:2em;min-height:1em}
+.cap:hover{outline-color:#ffffff66}
+.cap.sel{outline:2px solid var(--accent);outline-offset:3px}
+.cap.editing{cursor:text;outline:2px solid var(--blue);background:#0006}
+.guide{position:absolute;top:0;bottom:0;left:50%;width:1px;background:var(--accent);opacity:.8;pointer-events:none;z-index:2}
 .pin{position:absolute;width:22px;height:22px;margin:-11px 0 0 -11px;border:2px solid var(--accent);border-radius:50%;box-shadow:0 0 0 3px #0008;pointer-events:none}
 .pin::after{content:"";position:absolute;inset:6px;background:var(--accent);border-radius:50%}
 .rendered{position:absolute;inset:12px;display:flex;align-items:center;justify-content:center}
@@ -147,7 +153,12 @@ kbd{font-family:ui-monospace,Menlo,monospace;font-size:10.5px;background:var(--p
 .ovc{position:absolute;top:4px;height:var(--ov-h);border-radius:5px;background:#4b2d7a;border:1px solid #8b5cf6;font-size:11px;padding:5px 8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:grab}
 .ovc.sel{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent)}
 .ovc.flash{animation:flash 2.4s ease-out}
-.cue{position:absolute;top:4px;height:var(--cap-h);border-radius:4px;background:#3a3a43;border:1px solid #4a4a55;font-size:10px;padding:4px 5px;white-space:nowrap;overflow:hidden;color:#ddd;font-weight:700}
+.cue{position:absolute;top:4px;height:var(--cap-h);border-radius:4px;background:#3a3a43;border:1px solid #4a4a55;font-size:10px;padding:4px 6px;white-space:nowrap;overflow:hidden;color:#ddd;font-weight:700;cursor:grab}
+.cue:hover{border-color:#77778a}
+.cue.edited{background:#4a3a2a;border-color:#a0703f}
+.cue.moved::after{content:"⤧";position:absolute;right:3px;top:3px;font-size:9px;opacity:.7}
+.cue.sel{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent);z-index:3}
+.cue .h{width:6px}
 .playhead{position:absolute;top:0;bottom:0;width:1px;background:var(--accent);z-index:8;pointer-events:none}
 .playhead::before{content:"";position:absolute;top:0;left:-6px;border:6px solid transparent;border-top:9px solid var(--accent)}
 .range{position:absolute;top:0;bottom:0;background:#4c8dff22;border-left:1px solid var(--blue);border-right:1px solid var(--blue);z-index:5;pointer-events:none}
@@ -253,7 +264,8 @@ kbd{font-family:ui-monospace,Menlo,monospace;font-size:10.5px;background:var(--p
 
   <div class="tl" id="tl">
     <div class="tl-bar">
-      <span class="tool"><kbd>S</kbd> split · <kbd>⌫</kbd> delete · <kbd>I</kbd>/<kbd>O</kbd> mark range · drag edges to trim (snaps to words, <kbd>⌥</kbd> free) · drag clips to reorder · click the frame to point Claude at it</span>
+      <button class="ghost" id="addCap" title="Add a caption at the playhead (T)">+ Caption</button><button class="ghost" id="resetCaps" title="Throw away caption edits and go back to auto captions from the transcript">↺ Auto captions</button>
+      <span class="tool">captions: double-click to retype · drag on the frame (<kbd>⇧</kbd> moves all) · drag edges to retime · <kbd>T</kbd> new · <kbd>S</kbd> split · <kbd>⌫</kbd> delete · <kbd>I</kbd>/<kbd>O</kbd> mark range · drag edges to trim (snaps to words, <kbd>⌥</kbd> free) · drag clips to reorder · click the frame to point Claude at it</span>
       <span class="meta" id="tlinfo" style="white-space:nowrap"></span>
       <span class="meta">zoom</span><input type="range" id="zoom" min="0" max="100" value="35" style="width:140px">
     </div>
@@ -292,7 +304,8 @@ const S = {
   clips: [], total: 0, cues: [],
   out: 0, playing: false, active: -1,
   pps: 40, history: [], future: [],
-  sel: { clips: new Set(), overlays: new Set(), words: null, range: null, pin: null, assets: new Set() },
+  sel: { clips: new Set(), overlays: new Set(), words: null, range: null, pin: null, assets: new Set(), cue: null },
+  capstyle: {},
   bin: [], apps: [], brand: null,
   markIn: null,
   claudeBusy: false, renderBusy: false,
@@ -335,21 +348,43 @@ function derive() {
     off += c.dur; return c;
   });
   S.total = off;
-  // captions (mirrors render.py chunk_words: ~2 words, grow to 3 to avoid flashes)
   S.cues = [];
-  for (const c of S.clips) {
-    const ws = wordsIn(c.src, c.s, c.e).filter((w) => w.k === 'w' && w.t);
-    let cur = [];
-    ws.forEach((w, k) => {
-      cur.push(w);
-      const nx = ws[k + 1], gap = nx ? nx.s - w.e : 0, dur = w.e - cur[0].s;
-      if (!nx || /[.,!?;:]$/.test(w.t) || gap >= 0.3 || cur.length >= 3 || (cur.length >= 2 && dur >= 0.35)) {
-        const a = Math.max(c.s, cur[0].s) - c.s + c.off, b = Math.min(c.e, cur[cur.length - 1].e) - c.s + c.off;
-        S.cues.push({ a, b: b > a ? b : a + 0.4, text: cur.map((x) => x.t).join(' ').replace(/[,;:]$/, '').toUpperCase() });
-        cur = [];
-      }
-    });
+  const caps = S.edl.captions || {};
+  const autoText = (src, a, b) => wordsIn(src, a, b).filter((w) => w.k === 'w' && w.t).map((w) => w.t).join(' ').replace(/[,;:]$/, '').toUpperCase();
+  if (Array.isArray(caps.cues) && caps.cues.length) {
+    // edited captions (mirrors render.py caption_entries_from_cues): source-anchored, split per kept range
+    for (const c of S.clips) {
+      if (c.r.mute) continue;
+      caps.cues.forEach((q, qi) => {
+        if (!q || q.source !== c.src) return;
+        const a = Math.max(c.s, +q.start), b = Math.min(c.e, +q.end);
+        if (b - a < 0.05) return;
+        const text = q.text != null ? String(q.text) : autoText(c.src, a, b);
+        if (!text.trim()) return;
+        S.cues.push({ a: a - c.s + c.off, b: b - c.s + c.off, text, qi, src: c.src, sa: a, sb: b, clip: c.i,
+          pos: q.pos || caps.pos || null, edited: q.text != null, moved: !!q.pos });
+      });
+    }
+    S.cues.sort((x, y) => x.a - y.a);
+  } else {
+    // auto captions (mirrors render.py chunk_words: ~2 words, grow to 3 to avoid flashes)
+    for (const c of S.clips) {
+      if (c.r.mute) continue;
+      const ws = wordsIn(c.src, c.s, c.e).filter((w) => w.k === 'w' && w.t);
+      let cur = [];
+      ws.forEach((w, k) => {
+        cur.push(w);
+        const nx = ws[k + 1], gap = nx ? nx.s - w.e : 0, dur = w.e - cur[0].s;
+        if (!nx || /[.,!?;:]$/.test(w.t) || gap >= 0.3 || cur.length >= 3 || (cur.length >= 2 && dur >= 0.35)) {
+          const sa = Math.max(c.s, cur[0].s), sb = Math.min(c.e, cur[cur.length - 1].e);
+          S.cues.push({ a: sa - c.s + c.off, b: (sb > sa ? sb : sa + 0.4) - c.s + c.off, sa, sb, src: c.src, clip: c.i, qi: -1,
+            text: cur.map((x) => x.t).join(' ').replace(/[,;:]$/, '').toUpperCase(), pos: caps.pos || null, edited: false });
+          cur = [];
+        }
+      });
+    }
   }
+  S.cues.forEach((q, k) => (q.k = k));
 }
 function clipAt(out) {
   for (const c of S.clips) if (out < c.off + c.dur - 1e-6) return c;
@@ -367,7 +402,7 @@ async function load() {
   $('proj').textContent = p.name + ' / edit';
   S.showCaps = !!S.edl.subtitles; $('capToggle').checked = S.showCaps;
   S.claudeBusy = p.claude_busy; setBusy(S.claudeBusy);
-  S.bin = p.bin || []; S.apps = p.apps || []; S.brand = p.brand;
+  S.bin = p.bin || []; S.apps = p.apps || []; S.brand = p.brand; S.capstyle = p.capstyle || {};
   $('brandBadge').innerHTML = S.brand ? `<span class="brandok" title="${esc(S.brand)}">brand ✓</span>` : '<span class="brandno" title="Run the video-use-setup skill to create brand.md">no brand.md</span>';
   (p.chat || []).forEach(renderChatEntry);
   if (!p.video_use) toast('video-use repo not found — rendering disabled (pass --video-use)', 5000);
@@ -463,8 +498,86 @@ function cutRange(edl, i, a, b) {
   if (next) { const rs = next.s - Math.min(PAD_IN, (next.s - b) / 2); if (r.end - rs > 0.1) parts.push({ ...r, start: r3(rs) }); }
   edl.ranges.splice(i, 1, ...parts);
 }
+// ---- captions: helpers -----------------------------------------------------
+// Turn auto captions into explicit edl.captions.cues the first time one is edited.
+// Auto cue k becomes cues[k], so callers can resolve indices before mutating.
+function ensureCues(edl) {
+  edl.captions = edl.captions || {};
+  if (!Array.isArray(edl.captions.cues) || !edl.captions.cues.length) {
+    edl.captions.cues = S.cues.map((q) => ({ source: q.src, start: r3(q.sa), end: r3(q.sb) }));
+  }
+  if (!edl.subtitles) { edl.subtitles = 'master.srt'; S.showCaps = true; $('capToggle').checked = true; }
+  return edl.captions.cues;
+}
+const cueIndex = (d) => (d.qi >= 0 ? d.qi : d.k);
+function selCue() {
+  const s = S.sel.cue; if (!s) return null;
+  return S.cues.find((q) => (s.qi >= 0 ? q.qi === s.qi && Math.abs(q.a - s.a) < 0.5 : Math.abs(q.a - s.a) < 1e-3)) || S.cues.find((q) => q.qi >= 0 && q.qi === s.qi) || null;
+}
+function selectCue(d, seekTo = true) {
+  S.sel = { clips: new Set(), overlays: new Set(), words: null, range: null, pin: null, assets: new Set(), cue: d ? { qi: d.qi >= 0 ? d.qi : -1, a: d.a } : null };
+  if (d && seekTo && !(S.out >= d.a && S.out < d.b)) seek(d.a + 0.01);
+  lastCue = undefined; renderAll(); drawPin();
+}
+function afterCueMaterialize(d) { if (S.sel.cue && d) S.sel.cue = { qi: cueIndex(d), a: d.a }; }
+function setCueText(d, text) {
+  const qi = cueIndex(d);
+  mutate((edl) => {
+    const cues = ensureCues(edl);
+    if (!text.trim()) cues.splice(qi, 1); else cues[qi].text = text;
+  });
+  if (text.trim()) S.sel.cue = { qi, a: d.a }; else S.sel.cue = null;
+  lastCue = undefined; renderAll();
+}
+function addCaptionAtPlayhead() {
+  const p = outToSrc(S.out); if (!p) return;
+  let qi = -1;
+  mutate((edl) => {
+    const cues = ensureCues(edl);
+    cues.push({ source: p.c.src, start: r3(p.t), end: r3(Math.min(p.c.e, p.t + 1.5)), text: 'NEW CAPTION', pos: [0.5, 0.5] });
+    qi = cues.length - 1;
+  });
+  S.sel.cue = { qi, a: S.out }; pause(); seek(S.out);
+  const d = selCue(); if (d) { lastCue = undefined; drawStage(); editCap(); }
+}
+function resetCaptions() {
+  if (!S.edl.captions?.cues?.length) return toast('Captions are already automatic');
+  mutate((edl) => { delete edl.captions.cues; if (!Object.keys(edl.captions).length) delete edl.captions; });
+  S.sel.cue = null; toast('Back to auto captions from the transcript · ⌘Z to undo');
+}
+// Overwrite edit: other cues on the same source lose whatever the edited cue now covers.
+function resolveOverlaps(cues, qi) {
+  const me = cues[qi]; if (!me) return qi;
+  const a = +me.start, b = +me.end, keep = [];
+  cues.forEach((q, i) => {
+    if (i === qi) return;
+    if (q.source !== me.source || +q.end <= a || +q.start >= b) return keep.push(q);
+    if (+q.start < a && +q.end > b) { keep.push({ ...q, end: r3(a) }, { ...q, start: r3(b) }); return; } // split around
+    if (+q.start < a) { if (a - q.start >= 0.1) keep.push({ ...q, end: r3(a) }); return; }
+    if (+q.end > b) { if (q.end - b >= 0.1) keep.push({ ...q, start: r3(b) }); return; }
+    // fully covered → dropped
+  });
+  keep.push(me);
+  keep.sort((x, y) => (x.source < y.source ? -1 : x.source > y.source ? 1 : +x.start - +y.start));
+  cues.length = 0; cues.push(...keep);
+  return cues.indexOf(me);
+}
+function snapWord(src, t, kind, alt) {
+  if (alt) return t;
+  let best = t, bd = 10 / S.pps;
+  for (const w of words(src)) { const c = kind === 'in' ? w.s : w.e; const d = Math.abs(c - t); if (d < bd) { bd = d; best = c; } }
+  return best;
+}
+const assColor = (v, fallback) => {
+  const m = /&H([0-9A-F]{2})?([0-9A-F]{2})([0-9A-F]{2})([0-9A-F]{2})/i.exec(v || ''); if (!m) return fallback;
+  const a = m[1] ? 1 - parseInt(m[1], 16) / 255 : 1;
+  return `rgba(${parseInt(m[4], 16)},${parseInt(m[3], 16)},${parseInt(m[2], 16)},${a.toFixed(2)})`;
+};
+
 function deleteSelection() {
   const sel = S.sel;
+  const dc = selCue();
+  if (dc) { setCueText(dc, ''); toast('Caption removed · ⌘Z to undo'); return; }
   if (sel.words) {
     const list = selectedWords();
     if (!list.length) return;
@@ -528,7 +641,21 @@ function sizeStage() {
   const wrap = $('stageWrap'); const W = wrap.clientWidth - 24, H = wrap.clientHeight - 24;
   let w = W, h = W / ar; if (h > H) { h = H; w = H * ar; }
   const st = $('stage'); st.style.width = w + 'px'; st.style.height = h + 'px';
-  const cap = $('cap'); cap.style.fontSize = Math.max(12, h * 0.062) + 'px'; cap.style.bottom = (h * 0.30) + 'px';
+  applyCapStyle(h);
+}
+function applyCapStyle(h) {
+  // ASS script space is 288 units tall (render.py / libass), so scale everything by h/288
+  const st = S.capstyle || {}, u = h / 288, cap = $('cap');
+  cap.style.fontFamily = `"${st.FontName || 'Helvetica'}", Helvetica, Arial, sans-serif`;
+  // libass sizes a font by its full line height (ascent+descent); CSS by its em box (~1.15× smaller)
+  cap.style.fontSize = (+(st.FontSize || 20) * u * 0.87) + 'px'; cap.style.lineHeight = '1.15';
+  cap.style.fontWeight = st.Bold === '0' ? '400' : '800';
+  cap.style.color = assColor(st.PrimaryColour, '#fff');
+  const boxed = st.BorderStyle === '3';
+  cap.style.webkitTextStroke = boxed ? '0' : `${(+(st.Outline ?? 2) * u * 2).toFixed(1)}px ${assColor(st.OutlineColour, '#000')}`;
+  cap.style.background = boxed ? assColor(st.BackColour, 'rgba(0,0,0,.6)') : '';
+  S.capBottom = (+(st.MarginV ?? 48)) * u;
+  lastCue = undefined;
 }
 function showClip(i, srcT, play) {
   const c = S.clips[i]; if (!c) return;
@@ -574,7 +701,7 @@ function tick() {
   drawStage();
   requestAnimationFrame(tick);
 }
-let lastCue = null, lastWordKey = null;
+let lastCue = null, lastWordKey = null, capEditing = false;
 function drawStage() {
   // overlays
   ovPlayers.forEach(({ el, ov }) => {
@@ -588,7 +715,14 @@ function drawStage() {
   });
   // captions
   const cue = S.showCaps ? S.cues.find((q) => S.out >= q.a && S.out < q.b) : null;
-  if (cue !== lastCue) { $('cap').textContent = cue ? cue.text : ''; lastCue = cue; }
+  if (cue !== lastCue && !capEditing) {
+    const cap = $('cap'); cap.textContent = cue ? cue.text : ''; lastCue = cue;
+    if (cue) {
+      if (cue.pos) { cap.style.left = (cue.pos[0] * 100) + '%'; cap.style.top = (cue.pos[1] * 100) + '%'; cap.style.bottom = 'auto'; cap.style.transform = 'translate(-50%,-50%)'; }
+      else { cap.style.left = '50%'; cap.style.top = 'auto'; cap.style.bottom = (S.capBottom ?? 48) + 'px'; cap.style.transform = 'translateX(-50%)'; }
+      const sc = selCue(); cap.classList.toggle('sel', !!sc && sc.k === cue.k);
+    }
+  }
   // transport + playhead
   $('tc').innerHTML = `${fmt(S.out)} <small>/ ${fmt(S.total)}</small>`;
   $('ph').style.left = (S.out * S.pps) + 'px';
@@ -615,7 +749,7 @@ function scrollIntoTimeline(out) { const sc = $('scroll'), x = out * S.pps; if (
 // ---------------------------------------------------------------------------
 // Timeline rendering
 // ---------------------------------------------------------------------------
-function renderAll() { renderTimeline(); renderTranscript(); renderInspector(); renderChips(); }
+function renderAll() { lastCue = undefined; renderTimeline(); renderTranscript(); renderInspector(); renderChips(); }
 function renderTimeline() {
   if (!S.edl) return;
   const pps = S.pps, W = Math.max(S.total * pps + 400, $('scroll').clientWidth);
@@ -648,9 +782,12 @@ function renderTimeline() {
   });
   // C1 captions
   const tC = $('tC'); tC.innerHTML = ''; tC.style.opacity = S.showCaps ? 1 : .35;
+  const sc = selCue();
   for (const q of S.cues) {
-    const el = document.createElement('div'); el.className = 'cue';
-    el.style.left = (q.a * pps) + 'px'; el.style.width = Math.max(2, (q.b - q.a) * pps - 1) + 'px'; el.textContent = q.text;
+    const el = document.createElement('div'); el.className = 'cue' + (q.edited ? ' edited' : '') + (q.moved ? ' moved' : '') + (sc && sc.k === q.k ? ' sel' : '');
+    el.dataset.k = q.k; el.title = `${q.text}\n${fmt(q.a)}–${fmt(q.b)}${q.edited ? ' · edited text' : ''}${q.pos ? ' · moved' : ''}\nDouble-click to edit`;
+    el.style.left = (q.a * pps) + 'px'; el.style.width = Math.max(2, (q.b - q.a) * pps - 1) + 'px';
+    el.innerHTML = `${esc(q.text.replace(/\n/g, ' / '))}<div class="h h-l"></div><div class="h h-r"></div>`;
     tC.appendChild(el);
   }
   drawRuler(); drawRange();
@@ -739,7 +876,7 @@ function paintWordSel() { document.querySelectorAll('.tx .w[data-fi]').forEach((
     if (el) {
       const fi = +el.dataset.fi;
       if (e.shiftKey && S.sel.words) S.sel.words.b = fi; else S.sel.words = { a: fi, b: fi };
-      S.sel.clips.clear(); S.sel.overlays.clear(); dragging = true; paintWordSel(); e.preventDefault();
+      S.sel.clips.clear(); S.sel.overlays.clear(); S.sel.cue = null; dragging = true; paintWordSel(); e.preventDefault();
     }
   });
   tx.addEventListener('mouseover', (e) => { if (!dragging) return; const el = e.target.closest('.w[data-fi]'); if (el) { S.sel.words.b = +el.dataset.fi; paintWordSel(); } });
@@ -767,6 +904,7 @@ function paintWordSel() { document.querySelectorAll('.tx .w[data-fi]').forEach((
 function xToOut(clientX) { const sc = $('scroll'); return (clientX - sc.getBoundingClientRect().left + sc.scrollLeft) / S.pps; }
 function selectClip(i, add) {
   if (!add) { S.sel.clips.clear(); S.sel.overlays.clear(); }
+  S.sel.cue = null;
   S.sel.words = null;
   if (S.sel.clips.has(i) && add) S.sel.clips.delete(i); else S.sel.clips.add(i);
   renderAll();
@@ -790,6 +928,8 @@ function snapTo(src, t, kind, alt) {
   }, { passive: false });
   // scrub on ruler / empty track area
   sc.addEventListener('mousedown', (e) => {
+    const onCue = e.target.closest('.cue');
+    if (onCue) return cueMouseDown(e, onCue);
     const onClip = e.target.closest('.clip,.ovc');
     if (onClip) return clipMouseDown(e, onClip);
     if (e.target.closest('.wclip') && !e.target.closest('.ruler')) {
@@ -797,7 +937,7 @@ function snapTo(src, t, kind, alt) {
     }
     const scrub = (ev) => { seek(xToOut(ev.clientX)); };
     if (S.playing) pause();
-    if (!e.target.closest('.wclip') && !e.shiftKey) { S.sel.clips.clear(); S.sel.overlays.clear(); S.sel.words = null; renderAll(); }
+    if (!e.target.closest('.wclip') && !e.shiftKey) { S.sel.clips.clear(); S.sel.overlays.clear(); S.sel.words = null; S.sel.cue = null; lastCue = undefined; renderAll(); }
     scrub(e);
     const up = () => { window.removeEventListener('mousemove', scrub); window.removeEventListener('mouseup', up); };
     window.addEventListener('mousemove', scrub); window.addEventListener('mouseup', up);
@@ -861,13 +1001,101 @@ function clipMouseDown(e, el) {
   };
   window.addEventListener('mousemove', mv); window.addEventListener('mouseup', up);
 }
+function cueMouseDown(e, el) {
+  e.preventDefault(); e.stopPropagation();
+  if (S.claudeBusy) { toast('Claude is editing — hold on a sec'); return; }
+  const d = S.cues[+el.dataset.k]; if (!d) return;
+  if (e.detail === 2) { selectCue(d); editCap(); return; }
+  pause();
+  const handle = e.target.closest('.h'), side = handle ? (handle.classList.contains('h-l') ? 'l' : 'r') : 'move';
+  const snapshot = JSON.stringify(S.edl), x0 = e.clientX; let moved = false, qi = cueIndex(d);
+  const orig = { s: null, e: null };
+  const mv = (ev) => {
+    if (!moved && Math.abs(ev.clientX - x0) < 3) return;
+    if (!moved) { moved = true; const cues = ensureCues(S.edl); orig.s = +cues[qi].start; orig.e = +cues[qi].end; }
+    const dt = (ev.clientX - x0) / S.pps, q = S.edl.captions.cues[qi];
+    if (side === 'l') q.start = r3(Math.min(snapWord(q.source, orig.s + dt, 'in', ev.altKey), orig.e - 0.1));
+    else if (side === 'r') q.end = r3(Math.max(snapWord(q.source, orig.e + dt, 'out', ev.altKey), orig.s + 0.1));
+    else { q.start = r3(orig.s + dt); q.end = r3(orig.e + dt); }
+    derive(); S.sel.cue = { qi, a: S.cues.find((c) => c.qi === qi)?.a ?? d.a }; renderTimeline(); lastCue = undefined; drawStage();
+    $('tlinfo').textContent = `caption ${q.start.toFixed(2)}–${q.end.toFixed(2)}s`;
+  };
+  const up = () => {
+    window.removeEventListener('mousemove', mv); window.removeEventListener('mouseup', up);
+    if (moved) {
+      const cues = S.edl.captions.cues, before = cues.length;
+      qi = resolveOverlaps(cues, qi);
+      S.history.push(snapshot); S.future = []; afterChange(false);
+      S.sel.cue = { qi, a: S.cues.find((c) => c.qi === qi)?.a ?? d.a }; renderAll();
+      if (cues.length < before) toast(`Overwrote ${before - cues.length} neighbouring caption${before - cues.length > 1 ? 's' : ''} · ⌘Z to undo`);
+    }
+    else selectCue(d);
+  };
+  window.addEventListener('mousemove', mv); window.addEventListener('mouseup', up);
+}
 function setZoom(pps) { S.pps = clamp(pps, 4, 320); $('zoom').value = Math.round(Math.log(S.pps / 4) / Math.log(80) * 100); renderTimeline(); drawStage(); }
 $('zoom').addEventListener('input', (e) => { S.pps = 4 * Math.pow(80, e.target.value / 100); renderTimeline(); drawStage(); });
 
 // ---------------------------------------------------------------------------
 // Monitor: click the frame to point Claude at it
 // ---------------------------------------------------------------------------
+function editCap() {
+  const d = selCue() || lastCue; if (!d) return;
+  pause(); const cap = $('cap'); capEditing = true;
+  cap.classList.add('editing'); cap.contentEditable = 'plaintext-only'; cap.textContent = d.text; cap.focus();
+  const r = document.createRange(); r.selectNodeContents(cap); const sl = getSelection(); sl.removeAllRanges(); sl.addRange(r);
+  const done = (commit) => {
+    if (!capEditing) return; capEditing = false;
+    cap.contentEditable = 'false'; cap.classList.remove('editing');
+    cap.removeEventListener('keydown', key); cap.removeEventListener('blur', blur);
+    const v = cap.innerText.replace(/\n+$/, '');
+    lastCue = undefined;
+    if (commit === 'enter' && !v.trim()) { setCueText(d, ''); toast('Caption removed · ⌘Z to undo'); return; }
+    if (commit && v.trim() && v !== d.text) setCueText(d, v); else drawStage();
+  };
+  const key = (ev) => { ev.stopPropagation(); if (ev.key === 'Enter' && !ev.shiftKey) { ev.preventDefault(); done('enter'); } if (ev.key === 'Escape') { ev.preventDefault(); done(false); } };
+  const blur = () => done(true);
+  cap.addEventListener('keydown', key); cap.addEventListener('blur', blur);
+}
+$('cap').addEventListener('mousedown', (e) => {
+  if (capEditing) return;
+  e.preventDefault(); e.stopPropagation();
+  const d = lastCue; if (!d) return;
+  if (S.claudeBusy) { toast('Claude is editing — hold on a sec'); return; }
+  S.suppressClick = true;
+  if (e.detail === 2) { selectCue(d, false); editCap(); return; }
+  pause(); selectCue(d, false);
+  const st = $('stage').getBoundingClientRect(), cr = $('cap').getBoundingClientRect();
+  const cx0 = (cr.left + cr.width / 2 - st.left) / st.width, cy0 = (cr.top + cr.height / 2 - st.top) / st.height;
+  const x0 = e.clientX, y0 = e.clientY; let moved = false, pos = null;
+  let guide = null;
+  const mv = (ev) => {
+    if (!moved && Math.hypot(ev.clientX - x0, ev.clientY - y0) < 3) return;
+    moved = true;
+    let x = clamp(cx0 + (ev.clientX - x0) / st.width, 0.03, 0.97), y = clamp(cy0 + (ev.clientY - y0) / st.height, 0.03, 0.97);
+    const snap = Math.abs(x - 0.5) < 0.015 && !ev.altKey; if (snap) x = 0.5;
+    if (snap && !guide) { guide = document.createElement('div'); guide.className = 'guide'; $('stage').appendChild(guide); }
+    if (!snap && guide) { guide.remove(); guide = null; }
+    pos = [r3(x), r3(y)];
+    const cap = $('cap'); cap.style.left = (x * 100) + '%'; cap.style.top = (y * 100) + '%'; cap.style.bottom = 'auto'; cap.style.transform = 'translate(-50%,-50%)';
+  };
+  const up = (ev) => {
+    window.removeEventListener('mousemove', mv); window.removeEventListener('mouseup', up); guide?.remove();
+    setTimeout(() => (S.suppressClick = false), 0);
+    if (!moved || !pos) return;
+    const all = ev.shiftKey, qi = cueIndex(d);
+    mutate((edl) => {
+      const cues = ensureCues(edl);
+      if (all) { edl.captions.pos = pos; cues.forEach((q) => delete q.pos); }
+      else cues[qi].pos = pos;
+    });
+    S.sel.cue = { qi, a: d.a }; lastCue = undefined; renderAll();
+    toast(all ? 'Moved all captions' : 'Moved this caption · hold ⇧ while dragging to move all');
+  };
+  window.addEventListener('mousemove', mv); window.addEventListener('mouseup', up);
+});
 $('stage').addEventListener('click', (e) => {
+  if (e.target.closest('#cap') || S.suppressClick) { S.suppressClick = false; return; }
   const st = $('stage').getBoundingClientRect();
   const x = (e.clientX - st.left) / st.width, y = (e.clientY - st.top) / st.height;
   const p = outToSrc(S.out); if (!p) return;
@@ -901,10 +1129,22 @@ function showAsk(cx, cy, ph) {
 // ---------------------------------------------------------------------------
 function renderInspector() {
   const el = $('insp'); if (!S.edl) return;
+  const dcue = selCue();
   const ci = S.sel.clips.size === 1 ? [...S.sel.clips][0] : null;
   const oi = S.sel.overlays.size === 1 ? [...S.sel.overlays][0] : null;
   let h = '<div class="insp">';
-  if (ci !== null && S.edl.ranges[ci]) {
+  if (dcue) {
+    const cs = S.capstyle || {};
+    h += `<h4>Caption · ${fmt(dcue.a)}–${fmt(dcue.b)}</h4>
+      <div class="field"><label>Text (⇧↵ for a new line)</label><textarea data-c="text">${esc(dcue.text)}</textarea></div>
+      <div class="row"><div class="field"><label>Start (source s)</label><input type="number" step="0.01" data-c="start" value="${num(dcue.sa)}"></div>
+      <div class="field"><label>End (source s)</label><input type="number" step="0.01" data-c="end" value="${num(dcue.sb)}"></div></div>
+      <div class="row"><div class="field"><label>X % (centre)</label><input type="number" step="1" data-c="x" value="${dcue.pos ? Math.round(dcue.pos[0] * 100) : ''}" placeholder="auto"></div>
+      <div class="field"><label>Y %</label><input type="number" step="1" data-c="y" value="${dcue.pos ? Math.round(dcue.pos[1] * 100) : ''}" placeholder="auto"></div></div>
+      <div class="row"><button data-ca="all">Use this position for all</button><button data-ca="resetpos">Reset position</button></div>
+      ${dcue.edited ? '<button data-ca="autotext">Back to transcript words</button>' : ''}
+      <div class="meta">Font ${esc(cs.FontName || 'Helvetica')} · size ${esc(cs.FontSize || '20')} · from ${S.brand ? 'the brand style.json' : 'the default style'}. Change those for the whole brand in style.json, or ask Claude.</div>`;
+  } else if (ci !== null && S.edl.ranges[ci]) {
     const r = S.edl.ranges[ci], c = S.clips[ci];
     h += `<h4>Clip ${ci + 1} · output ${fmt(c.off)}–${fmt(c.off + c.dur)}</h4>
       <div class="field"><label>Source</label><select data-f="source">${Object.keys(S.edl.sources).map((s) => `<option${s === r.source ? ' selected' : ''}>${esc(s)}</option>`).join('')}</select></div>
@@ -930,6 +1170,34 @@ function renderInspector() {
     <div class="field"><label><input type="checkbox" data-p="subs" ${S.edl.subtitles ? 'checked' : ''}> Burn captions on render (builds master.srt)</label></div>
     <div class="meta">${S.clips.length} clips · ${fmt(S.total)} · ${(S.edl.overlays || []).length} overlays · ${Object.keys(S.edl.sources).length} sources</div></div>`;
   el.innerHTML = h;
+  if (dcue) {
+    const qi = cueIndex(dcue);
+    el.querySelectorAll('[data-c]').forEach((inp) => inp.addEventListener('change', () => {
+      const f = inp.dataset.c;
+      if (f === 'text') return setCueText(dcue, inp.value);
+      mutate((edl) => {
+        const q = ensureCues(edl)[qi];
+        if (f === 'start') q.start = r3(Math.min(+inp.value, +q.end - 0.1));
+        if (f === 'end') q.end = r3(Math.max(+inp.value, +q.start + 0.1));
+        if (f === 'x' || f === 'y') {
+          const cur = q.pos || edl.captions.pos || [0.5, 0.8];
+          const v = clamp((+inp.value || 0) / 100, 0, 1);
+          q.pos = f === 'x' ? [r3(v), cur[1]] : [cur[0], r3(v)];
+        }
+      });
+      S.sel.cue = { qi, a: dcue.a }; renderAll();
+    }));
+    el.querySelectorAll('[data-ca]').forEach((b) => b.addEventListener('click', () => {
+      const a = b.dataset.ca;
+      mutate((edl) => {
+        const cues = ensureCues(edl), q = cues[qi];
+        if (a === 'all') { edl.captions.pos = q.pos || dcue.pos || null; cues.forEach((x) => delete x.pos); if (!edl.captions.pos) delete edl.captions.pos; }
+        if (a === 'resetpos') delete q.pos;
+        if (a === 'autotext') delete q.text;
+      });
+      S.sel.cue = { qi, a: dcue.a }; lastCue = undefined; renderAll();
+    }));
+  }
   el.querySelectorAll('[data-f]').forEach((inp) => inp.addEventListener('change', () => {
     const f = inp.dataset.f; mutate((edl) => { const r = edl.ranges[ci]; r[f] = inp.type === 'number' ? r3(+inp.value) : inp.value; if (r.end <= r.start) r.end = r3(r.start + 0.1); });
   }));
@@ -952,6 +1220,7 @@ function selectionChips() {
   [...s.clips].sort((a, b) => a - b).forEach((i) => { const c = S.clips[i]; if (c) out.push({ k: 'clip', i, label: `Clip ${i + 1}${c.r.beat ? ' · ' + c.r.beat : ''} · ${fmt(c.off, true)}–${fmt(c.off + c.dur, true)}` }); });
   [...s.overlays].forEach((i) => out.push({ k: 'ov', i, label: `Overlay ${i + 1}` }));
   if (s.words) { const ws = selectedWords(); if (ws.length) out.push({ k: 'words', label: `“${ws.map((f) => f.w.t).join(' ').slice(0, 60)}${ws.length > 10 ? '…' : ''}”` }); }
+  const dc = selCue(); if (dc) out.push({ k: 'cue', label: `Caption “${dc.text.replace(/\n/g, ' ').slice(0, 40)}”` });
   if (s.range) out.push({ k: 'range', label: `Range ${fmt(s.range.a, true)}–${fmt(s.range.b, true)}` });
   [...s.assets].forEach((pth) => out.push({ k: 'asset', p: pth, label: `Asset · ${pth.split('/').pop()}` }));
   if (s.pin) out.push({ k: 'pin', label: `Frame @ ${fmt(s.pin.out)} · (${Math.round(s.pin.x * 100)}%, ${Math.round(s.pin.y * 100)}%)` });
@@ -965,10 +1234,11 @@ function renderChips() {
   $('chips').querySelectorAll('.chip x').forEach((x) => x.addEventListener('click', () => {
     const c = chips[+x.parentElement.dataset.n];
     if (c.k === 'clip') S.sel.clips.delete(c.i); if (c.k === 'ov') S.sel.overlays.delete(c.i);
-    if (c.k === 'words') S.sel.words = null; if (c.k === 'range') S.sel.range = null; if (c.k === 'pin') S.sel.pin = null; if (c.k === 'asset') S.sel.assets.delete(c.p);
+    if (c.k === 'words') S.sel.words = null; if (c.k === 'range') S.sel.range = null; if (c.k === 'pin') S.sel.pin = null; if (c.k === 'asset') S.sel.assets.delete(c.p); if (c.k === 'cue') S.sel.cue = null;
     renderAll(); drawPin();
   }));
-  const sug = chips.length ? (S.sel.assets.size && !S.sel.clips.size && !S.sel.words && !S.sel.pin ? ['Put this in the corner for the whole video', 'Use this as the end card (3s)', 'Show this full-screen over the selected clip', 'Add this as background music, ducked under speech']
+  const sug = chips.length ? (selCue() ? ['Highlight the key word in our accent colour', 'Split this into two lines', 'Make all captions this position', 'Fix caption timing for this clip']
+    : S.sel.assets.size && !S.sel.clips.size && !S.sel.words && !S.sel.pin ? ['Put this in the corner for the whole video', 'Use this as the end card (3s)', 'Show this full-screen over the selected clip', 'Add this as background music, ducked under speech']
     : S.sel.pin ? ['Add a lower-third here', 'Punch in on this', 'Add a text callout pointing here', 'What do you see in this frame?']
     : S.sel.words ? ['Cut this', 'Emphasize these words in the captions', 'Add a title card on this line', 'Find a cleaner take of this line']
       : ['Tighten this — cut pauses & filler', 'Make this punchier', 'Is there a better take?', 'Add a b-roll style overlay here'])
@@ -996,6 +1266,10 @@ function selectionText() {
       }
     }
   }
+  const dc = selCue();
+  if (dc) L.push(dc.qi >= 0
+    ? `Selected caption: edl.captions.cues[${dc.qi}] — output ${dc.a.toFixed(2)}–${dc.b.toFixed(2)}s, source ${dc.src} ${dc.sa.toFixed(2)}–${dc.sb.toFixed(2)}s, text "${dc.text}"${dc.pos ? `, pos [${dc.pos}]` : ''}`
+    : `Selected caption (auto, not yet in edl.captions — create edl.captions.cues from the auto chunks before editing): output ${dc.a.toFixed(2)}–${dc.b.toFixed(2)}s, source ${dc.src} ${dc.sa.toFixed(2)}–${dc.sb.toFixed(2)}s, text "${dc.text}"`);
   if (s.range) {
     const a = clipAt(s.range.a), b = clipAt(s.range.b - 0.001);
     L.push(`Marked range: output ${s.range.a.toFixed(2)}–${s.range.b.toFixed(2)}s (clips ${a.i + 1}–${b.i + 1})`);
@@ -1098,6 +1372,8 @@ function setMonitor(m) {
   } else $('rvid').pause();
 }
 $('mtLive').onclick = () => setMonitor('live'); $('mtRender').onclick = () => setMonitor('render');
+$('addCap').onclick = addCaptionAtPlayhead;
+$('resetCaps').onclick = resetCaptions;
 $('capToggle').onchange = (e) => { S.showCaps = e.target.checked; renderTimeline(); drawStage(); };
 
 // ---------------------------------------------------------------------------
@@ -1129,8 +1405,10 @@ window.addEventListener('keydown', (e) => {
     const a = S.markIn ?? 0, b = S.out;
     if (b - a > 0.05) { S.sel.range = { a, b }; drawRange(); renderChips(); } else toast('Out must be after In');
   }
-  else if (k === 'Escape') { S.sel = { clips: new Set(), overlays: new Set(), words: null, range: null, pin: null, assets: new Set() }; renderAll(); drawPin(); }
+  else if (k === 'Escape') { S.sel = { clips: new Set(), overlays: new Set(), words: null, range: null, pin: null, assets: new Set(), cue: null }; renderAll(); drawPin(); }
   else if (k === 'c' && !mod) { e.preventDefault(); $('prompt').focus(); }
+  else if (k === 'Enter' && selCue()) { e.preventDefault(); editCap(); }
+  else if (k === 't' && !mod) { e.preventDefault(); addCaptionAtPlayhead(); }
   else if (k === '=' || k === '+') setZoom(S.pps * 1.25);
   else if (k === '-') setZoom(S.pps / 1.25);
 });
