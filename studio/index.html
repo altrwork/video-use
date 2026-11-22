@@ -612,12 +612,21 @@ when which who will with you your yeah okay oh really very kind sort think would
 want get got make about these those than been being also here thing things lot gonna wanna`.split(/\s+/));
 function curLook() {
   const n = (S.edl && S.edl.captions && S.edl.captions.look) || S.lookDefault;
-  return n && n !== 'none' && S.looks ? S.looks[n] || null : null;
+  const L = n && n !== 'none' && S.looks ? S.looks[n] || null : null;
+  return L && safeLook(L) ? L : null;
+}
+// Look values end up in inline styles: accept only hex colours, plain font names and numbers.
+const HEX = /^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$/, FAM = /^[A-Za-z0-9 ]{1,40}$/;
+function safeLook(L) {
+  return [L.text, L.accent, ...(L.speakers || []), ...(L.box ? [L.box] : [])].every((c) => HEX.test(String(c)))
+    && [L.sans, ...(L.key_font ? [L.key_font] : [])].every((f) => FAM.test(String(f)))
+    && ['size', 'key_scale', 'pop', 'wide', 'tracking', 'line_height', 'outline', 'shadow'].every((k) => L[k] == null || Number.isFinite(+L[k]));
 }
 function loadLookFonts(fonts) {
   if (document.getElementById('lookFonts')) return;
   const st = document.createElement('style'); st.id = 'lookFonts';
-  st.textContent = Object.entries(fonts).map(([fam, url]) => `@font-face{font-family:"${fam.replace(/"/g, '')}";src:url("${U(url)}?token=${TOKEN}")}`).join('\n');
+  st.textContent = Object.entries(fonts).filter(([fam, url]) => FAM.test(fam) && /^\/fonts\/[A-Za-z0-9_.-]+\.(ttf|otf)$/.test(url))
+    .map(([fam, url]) => `@font-face{font-family:"${fam}";src:url("${U(url)}?token=${TOKEN}")}`).join('\n');
   document.head.appendChild(st);
 }
 function pickEmphasis(toks) {

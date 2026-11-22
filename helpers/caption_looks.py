@@ -107,6 +107,18 @@ def resolve_look(spec) -> dict | None:
         print(f"warning: unknown caption look '{name}' (looks: {', '.join(LOOKS)}); using plain captions")
         return None
     look = {**LOOKS[name], "name": name}
+    # style.json is edited by people and by Claude; only accept plain colours and font names
+    hexok = lambda v: isinstance(v, str) and re.fullmatch(r"#?[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?", v)  # noqa: E731
+    spec = {**spec}
+    for k in ("accent", "text"):
+        if spec.get(k) is not None and not hexok(spec[k]):
+            print(f"warning: caption_look.{k} must be a hex colour like #FF5A1F; ignoring it")
+            spec.pop(k)
+        elif spec.get(k) and not spec[k].startswith("#"):
+            spec[k] = "#" + spec[k]
+    if spec.get("sans") is not None and not (isinstance(spec["sans"], str) and re.fullmatch(r"[A-Za-z0-9 ]{1,40}", spec["sans"])):
+        print("warning: caption_look.sans must be a font family name; ignoring it")
+        spec.pop("sans")
     if spec.get("accent"):
         look["accent"] = spec["accent"]
         if look.get("text_is_accent"):
@@ -118,7 +130,7 @@ def resolve_look(spec) -> dict | None:
         look["sans_bold"] = name in ("editorial", "newsroom", "pop") or bool(spec.get("sans_bold"))
     if spec.get("speakers"):
         # text colour per speaker, in order of first appearance (speaker_0, speaker_1, ...)
-        look["speakers"] = [str(c) for c in spec["speakers"] if re.fullmatch(r"#?[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?", str(c))]
+        look["speakers"] = [("#" + str(c)).replace("##", "#") for c in spec["speakers"] if hexok(str(c))]
     return look
 
 
