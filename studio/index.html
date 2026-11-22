@@ -99,6 +99,7 @@ kbd{font-family:ui-monospace,Menlo,monospace;font-size:10.5px;background:var(--p
 .cap{position:absolute;left:50%;transform:translateX(-50%);max-width:94%;width:max-content;text-align:center;font-weight:800;font-family:Helvetica,Arial,sans-serif;color:#fff;
   -webkit-text-stroke:2px #000;paint-order:stroke fill;white-space:pre-wrap;line-height:1.15;cursor:move;border-radius:4px;padding:0 4px;outline:1px dashed transparent;z-index:3}
 .cap:empty:not(.editing){display:none}
+.cap.look{paint-order:stroke fill;border-radius:6px}
 .cap.editing{min-width:2em;min-height:1em}
 .cap:hover{outline-color:#ffffff66}
 .cap.sel{outline:2px solid var(--accent);outline-offset:3px}
@@ -338,7 +339,7 @@ const S = {
   out: 0, playing: false, active: -1,
   pps: 40, history: [], future: [],
   sel: { clips: new Set(), overlays: new Set(), words: null, range: null, pin: null, assets: new Set(), cue: null },
-  capstyle: {},
+  capstyle: {}, looks: {}, lookDefault: null, speakerIdx: {},
   bin: [], apps: [], brand: null,
   markIn: null,
   claudeBusy: false, renderBusy: false,
@@ -401,6 +402,27 @@ function derive() {
       });
     }
     S.cues.sort((x, y) => x.a - y.a);
+  } else if (curLook()) {
+    // auto captions in a look (mirrors caption_looks.page_words): the look's page size, never across a speaker change
+    const L = curLook(), R = L.page;
+    for (const c of S.clips) {
+      if (c.r.mute) continue;
+      const ws = wordsIn(c.src, c.s, c.e).filter((w) => w.k === 'w' && w.t);
+      let cur = [];
+      ws.forEach((w, k) => {
+        cur.push(w);
+        const nx = ws[k + 1], chars = cur.map((x) => x.t).join(' ').length;
+        if (!nx || (/[.!?;:,]$/.test(w.t) && cur.length >= 2) || (w.sp && nx.sp && w.sp !== nx.sp) || nx.s - w.e >= R.gap
+            || cur.length >= R.max_words || chars + 1 + nx.t.length > R.max_chars * R.max_lines) {
+          const sa = Math.max(c.s, cur[0].s), sb = Math.min(c.e, cur[cur.length - 1].e);
+          S.cues.push({ a: sa - c.s + c.off, b: sb - c.s + c.off, sa, sb, src: c.src, clip: c.i, qi: -1, sp: cur[0].sp,
+            words: cur.map((x) => ({ t: x.t, a: x.s - c.s + c.off })), text: cur.map((x) => x.t).join(' '),
+            pos: caps.pos || null, edited: false, scale: +(caps.scale || 1) });
+          cur = [];
+        }
+      });
+    }
+    S.cues.forEach((q, k) => { const n = S.cues[k + 1]; if (n && n.a - q.b > 0 && n.a - q.b < 0.5) q.b = n.a; });
   } else {
     // auto captions (mirrors render.py chunk_words: ~2 words, grow to 3 to avoid flashes)
     for (const c of S.clips) {
@@ -437,7 +459,7 @@ async function load() {
   $('proj').textContent = p.name + ' / edit';
   S.showCaps = !!S.edl.subtitles; $('capToggle').checked = S.showCaps;
   S.claudeBusy = p.claude_busy; setBusy(S.claudeBusy);
-  S.bin = p.bin || []; S.apps = p.apps || []; S.brand = p.brand; setNotes(p.notes); if (CLOUD) cloudUi(p); S.capstyle = p.capstyle || {};
+  S.bin = p.bin || []; S.apps = p.apps || []; S.brand = p.brand; setNotes(p.notes); if (CLOUD) cloudUi(p); S.capstyle = p.capstyle || {}; S.looks = (p.caption_looks || {}).looks || {}; S.lookDefault = (p.caption_looks || {}).default || null; loadLookFonts((p.caption_looks || {}).fonts || {});
   $('brandBadge').innerHTML = S.brand ? `<span class="brandok" title="${esc(S.brand)}">brand ✓</span>` : '<span class="brandno" title="Run the video-use-setup skill to create brand.md">no brand.md</span>';
   (p.chat || []).forEach(renderChatEntry);
   if (!p.video_use) toast('video-use repo not found — rendering disabled (pass --video-use)', 5000);
@@ -583,6 +605,79 @@ function ensureCues(edl) {
   return edl.captions.cues;
 }
 const cueIndex = (d) => (d.qi >= 0 ? d.qi : d.k);
+// ---- caption looks (helpers/caption_looks.py): preview approximation of the libass render ----
+const LOOK_FILLER = new Set(`a an and are as at be but by for from had has have he her his i if in is it its it's i'm i've
+just like me my of on or our so that the their them then there they this to uh um was we we're we'll were what
+when which who will with you your yeah okay oh really very kind sort think would could should know going
+want get got make about these those than been being also here thing things lot gonna wanna`.split(/\s+/));
+function curLook() {
+  const n = (S.edl && S.edl.captions && S.edl.captions.look) || S.lookDefault;
+  const L = n && n !== 'none' && S.looks ? S.looks[n] || null : null;
+  return L && safeLook(L) ? L : null;
+}
+// Look values end up in inline styles: accept only hex colours, plain font names and numbers.
+const HEX = /^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$/, FAM = /^[A-Za-z0-9 ]{1,40}$/;
+function safeLook(L) {
+  return [L.text, L.accent, ...(L.speakers || []), ...(L.box ? [L.box] : [])].every((c) => HEX.test(String(c)))
+    && [L.sans, ...(L.key_font ? [L.key_font] : [])].every((f) => FAM.test(String(f)))
+    && ['size', 'key_scale', 'pop', 'wide', 'tracking', 'line_height', 'outline', 'shadow'].every((k) => L[k] == null || Number.isFinite(+L[k]));
+}
+function loadLookFonts(fonts) {
+  if (document.getElementById('lookFonts')) return;
+  const st = document.createElement('style'); st.id = 'lookFonts';
+  st.textContent = Object.entries(fonts).filter(([fam, url]) => FAM.test(fam) && /^\/fonts\/[A-Za-z0-9_.-]+\.(ttf|otf)$/.test(url))
+    .map(([fam, url]) => `@font-face{font-family:"${fam}";src:url("${U(url)}?token=${TOKEN}")}`).join('\n');
+  document.head.appendChild(st);
+}
+function pickEmphasis(toks) {
+  const m = toks.findIndex((t) => /^\*.*\*[,.!?;:]*$/.test(t)); if (m >= 0) return m;
+  const n = toks.findIndex((t) => /\d/.test(t)); if (n >= 0) return n;
+  let best = -1, bl = 3;
+  toks.forEach((t, i) => { const w = t.toLowerCase().replace(/[^\w']/g, ''); const l = w.replace(/'/g, '').length; if (!LOOK_FILLER.has(w) && l > bl) { best = i; bl = l; } });
+  return best;
+}
+function activeWord(cue) {
+  const ws = cue.words; if (!ws) { const n = cue.text.split(/\s+/).length; return Math.min(n - 1, Math.floor((S.out - cue.a) / Math.max(0.01, (cue.b - cue.a) / n))); }
+  let i = 0; ws.forEach((w, k) => { if (S.out >= w.a) i = k; }); return i;
+}
+function lookPx(L) { const st = $('stage'); const h = st.clientHeight, w = st.clientWidth; return L.size / 100 * h * (w > h ? L.wide || 1 : 1); }
+function lookHTML(cue, L) {
+  const kase = (t) => (L.case === 'lower' ? t.toLowerCase() : L.case === 'upper' ? t.toUpperCase() : t);
+  let toks = cue.text.replace(/\n/g, ' ').split(/\s+/).filter(Boolean).map(kase);
+  if (L.strip_punct) toks = toks.map((t) => t.replace(/[,;:]+$/, ''));
+  const k = L.emphasis === false ? -1 : pickEmphasis(toks);
+  toks = toks.map((t) => t.replace(/\*/g, ''));
+  const spk = L.speakers && L.speakers.length && cue.sp ? L.speakers[(S.speakerIdx[cue.sp] ??= Object.keys(S.speakerIdx).length) % L.speakers.length] : null;
+  const base = spk || L.text, px = lookPx(L) * (cue.scale || 1);
+  const key = (t) => `<span style="font-family:'${L.key_font}';font-style:${L.key_italic ? 'italic' : 'normal'};font-weight:${L.key_font === 'Playfair Display Black' ? 900 : 400};color:${L.accent};font-size:${(L.key_scale || 1) * 100}%">${esc(t)}</span>`;
+  if (L.name === 'editorial') {
+    const pre = k >= 0 ? toks.slice(0, k) : toks, post = k >= 0 ? toks.slice(k + 1) : [];
+    return [pre.length ? `<div>${esc(pre.join(' '))}</div>` : '', k >= 0 ? `<div style="line-height:.78;margin:${px * 0.1}px 0">${key(toks[k])}</div>` : '', post.length ? `<div>${esc(post.join(' '))}</div>` : ''].join('');
+  }
+  const act = L.karaoke ? activeWord(cue) : -1;
+  return toks.map((t, i) => {
+    if (L.pop) return i === act ? `<span style="color:${L.accent};display:inline-block;transform:scale(${L.pop})">${esc(t)}</span>` : `<span style="color:${base}">${esc(t)}</span>`;
+    if (L.karaoke) return `<span style="color:${i === act ? L.text : L.accent}">${esc(t)}</span>`;
+    return i === k ? key(t) : esc(t);
+  }).join(' ');
+}
+function placeLook(cap, cue, L) {
+  const px = lookPx(L) * (cue.scale || 1), box = L.box;
+  Object.assign(cap.style, {
+    fontFamily: `'${L.sans}', Helvetica, Arial, sans-serif`, fontWeight: L.sans_bold || /ExtraBold|Black/.test(L.sans) ? '800' : L.sans === 'Inter Medium' ? '500' : '400',
+    fontSize: px + 'px', lineHeight: String(L.line_height || 1.2), letterSpacing: (L.tracking || 0) + 'em',
+    color: (L.speakers && L.speakers.length && cue.sp && !L.karaoke) ? L.speakers[(S.speakerIdx[cue.sp] ?? 0) % L.speakers.length] : (L.karaoke ? L.accent : L.text),
+    webkitTextStroke: L.outline ? `${(L.outline * px * 2).toFixed(1)}px #000` : '0', background: box ? hexA(box) : '',
+    padding: box ? `${px * 0.2}px ${px * 0.38}px` : '0 4px', textShadow: L.shadow ? `0 ${px * L.shadow / 10}px ${px * 0.12}px rgba(0,0,0,.55)` : 'none',
+    whiteSpace: L.name === 'editorial' ? 'nowrap' : 'pre-wrap', maxWidth: (L.page.max_chars * 0.62) + 'em',
+  });
+  const left = L.name === 'editorial' && !cue.pos;
+  const [ax, ay] = cue.pos || L.anchor;
+  cap.style.textAlign = left ? 'left' : 'center';
+  cap.style.left = ax * 100 + '%'; cap.style.top = ay * 100 + '%'; cap.style.bottom = 'auto';
+  cap.style.transform = left ? 'none' : 'translate(-50%,-50%)';
+}
+function hexA(h) { const m = /^#?(..)(..)(..)(..)?$/.exec(h); if (!m) return h; const [r, g, b] = [m[1], m[2], m[3]].map((x) => parseInt(x, 16)); return `rgba(${r},${g},${b},${m[4] ? (parseInt(m[4], 16) / 255).toFixed(2) : 1})`; }
 function selCue() {
   const s = S.sel.cue; if (!s) return null;
   return S.cues.find((q) => (s.qi >= 0 ? q.qi === s.qi && Math.abs(q.a - s.a) < 0.5 : Math.abs(q.a - s.a) < 1e-3)) || S.cues.find((q) => q.qi >= 0 && q.qi === s.qi) || null;
@@ -792,7 +887,7 @@ function tick() {
   drawStage();
   requestAnimationFrame(tick);
 }
-let lastCue = null, lastWordKey = null, capEditing = false;
+let lastCue = null, lastWordKey = null, capEditing = false, lastWordIdx = null;
 function drawStage() {
   // overlays
   ovPlayers.forEach(({ el, ov }) => {
@@ -807,12 +902,17 @@ function drawStage() {
   updateXf();
   // captions
   const cue = S.showCaps ? S.cues.find((q) => S.out >= q.a && S.out < q.b) : null;
-  if (cue !== lastCue && !capEditing) {
-    const cap = $('cap'); cap.textContent = cue ? cue.text : ''; lastCue = cue;
+  const L = curLook(), wkey = cue && L && L.karaoke ? cue.k + ':' + activeWord(cue) : null;
+  if ((cue !== lastCue || wkey !== lastWordIdx) && !capEditing) {
+    const cap = $('cap'); lastWordIdx = wkey;
+    if (cue && L) { cap.innerHTML = lookHTML(cue, L); cap.classList.add('look'); }
+    else { cap.textContent = cue ? cue.text : ''; cap.classList.remove('look'); }
+    lastCue = cue;
     if (cue) {
       cap.style.fontSize = ((S.capFont || 16) * (cue.scale || 1)) + 'px';
       if (cue.pos) { cap.style.left = (cue.pos[0] * 100) + '%'; cap.style.top = (cue.pos[1] * 100) + '%'; cap.style.bottom = 'auto'; cap.style.transform = 'translate(-50%,-50%)'; }
       else { cap.style.left = '50%'; cap.style.top = 'auto'; cap.style.bottom = (S.capBottom ?? 48) + 'px'; cap.style.transform = 'translateX(-50%)'; }
+      if (L) placeLook(cap, cue, L);
       const sc = selCue(); cap.classList.toggle('sel', !!sc && sc.k === cue.k);
     }
   }
@@ -1406,6 +1506,13 @@ function showAsk(cx, cy, ph) {
 // ---------------------------------------------------------------------------
 // Inspector
 // ---------------------------------------------------------------------------
+function lookPicker() {
+  const names = Object.keys(S.looks || {}); if (!names.length) return '';
+  const cur = (S.edl.captions && S.edl.captions.look) || '';
+  const def = S.lookDefault ? (S.looks[S.lookDefault]?.label || S.lookDefault) : 'plain';
+  return `<div class="field"><label>Caption look</label><select data-p="look"><option value=""${cur === '' ? ' selected' : ''}>Brand default (${esc(def)})</option>
+    ${names.map((n) => `<option value="${esc(n)}"${cur === n ? ' selected' : ''}>${esc(S.looks[n].label)}</option>`).join('')}<option value="none"${cur === 'none' ? ' selected' : ''}>Plain (brand caption box)</option></select></div>`;
+}
 function renderInspector() {
   const el = $('insp'); if (!S.edl) return;
   const dcue = selCue();
@@ -1423,7 +1530,8 @@ function renderInspector() {
       <div class="row"><div class="field"><label>Size %</label><input type="number" step="5" data-c="scale" value="${Math.round((dcue.scale || 1) * 100)}"></div><div></div></div>
       <div class="row"><button data-ca="all">Use this position for all</button><button data-ca="resetpos">Reset position</button></div>
       ${dcue.edited ? '<button data-ca="autotext">Back to transcript words</button>' : ''}
-      <div class="meta">Font ${esc(cs.FontName || 'Helvetica')} · size ${esc(cs.FontSize || '20')} · from ${S.brand ? 'the brand style.json' : 'the default style'}. Change those for the whole brand in style.json, or ask Claude.</div>`;
+      ${lookPicker()}
+      <div class="meta">${curLook() ? `Look: ${esc(curLook().label)}. Wrap a word in *asterisks* to make it the key word.` : ''} Font ${esc(cs.FontName || 'Helvetica')} · size ${esc(cs.FontSize || '20')} · from ${S.brand ? 'the brand style.json' : 'the default style'}. Change those for the whole brand in style.json, or ask Claude.</div>`;
   } else if (ci !== null && S.edl.ranges[ci]) {
     const r = S.edl.ranges[ci], c = S.clips[ci];
     h += `<h4>Clip ${ci + 1} · output ${fmt(c.off)}–${fmt(c.off + c.dur)}</h4>
@@ -1453,6 +1561,7 @@ function renderInspector() {
       <select data-p="gradePreset">${presets.map((p) => `<option${p === g ? ' selected' : ''}>${p}</option>`).join('')}${presets.includes(g) ? '' : '<option selected>custom</option>'}</select>
       ${presets.includes(g) ? '' : `<input data-p="grade" value="${esc(g)}">`}</div>
     <div class="field"><label><input type="checkbox" data-p="subs" ${S.edl.subtitles ? 'checked' : ''}> Burn captions on render (builds master.srt)</label></div>
+    ${lookPicker()}
     <div class="meta">${S.clips.length} clips · ${fmt(S.total)} · ${(S.edl.overlays || []).length} overlays · ${Object.keys(S.edl.sources).length} sources</div></div>`;
   el.innerHTML = h;
   if (dcue) {
@@ -1505,8 +1614,10 @@ function renderInspector() {
   el.querySelectorAll('[data-o]').forEach((inp) => inp.addEventListener('change', () => {
     const f = inp.dataset.o; mutate((edl) => { edl.overlays[oi][f] = inp.type === 'number' ? r3(+inp.value) : inp.value; });
   }));
-  el.querySelector('[data-p="gradePreset"]')?.addEventListener('change', (e) => { const v = e.target.value; mutate((edl) => { edl.grade = v === 'custom' ? 'eq=contrast=1.05' : v; }); });
-  el.querySelector('[data-p="grade"]')?.addEventListener('change', (e) => mutate((edl) => { edl.grade = e.target.value; }));
+  // picking a grade here is the user asking for a look, so record it (render.py ignores grades without grade_request)
+  el.querySelector('[data-p="gradePreset"]')?.addEventListener('change', (e) => { const v = e.target.value; mutate((edl) => { edl.grade = v === 'custom' ? 'eq=contrast=1.05' : v; if (v === 'none') delete edl.grade_request; else edl.grade_request = `picked "${v}" in the Studio`; }); });
+  el.querySelector('[data-p="grade"]')?.addEventListener('change', (e) => mutate((edl) => { edl.grade = e.target.value; edl.grade_request = 'typed a custom grade in the Studio'; }));
+  el.querySelector('[data-p="look"]')?.addEventListener('change', (e) => { const v = e.target.value; mutate((edl) => { edl.captions = edl.captions || {}; if (v === '') delete edl.captions.look; else edl.captions.look = v; if (!Object.keys(edl.captions).length) delete edl.captions; }); });
   el.querySelector('[data-p="subs"]')?.addEventListener('change', (e) => {
     mutate((edl) => { if (e.target.checked) edl.subtitles = 'master.srt'; else delete edl.subtitles; });
     S.showCaps = e.target.checked; $('capToggle').checked = S.showCaps; renderTimeline();

@@ -179,6 +179,8 @@ Then write:
 
 ASS colours are `&HAABBGGRR` (alpha first, 00 = opaque, then **blue-green-red**): `#FF6A1A` → `&H001A6AFF`. For a filled box behind captions use `BorderStyle=3` with the box colour in `BackColour` (and `OutlineColour` for some libass builds); semi-transparent alpha `80`.
 
+Optionally add a **caption look** (animated, styled captions; see "Caption looks" in the main SKILL.md): ask which of `editorial`, `cards`, `newsroom`, `cinema`, `pop`, `accent` fits (podcast and talking-head shorts: `pop`), then add `"caption_look": {"name": "...", "accent": "<brand accent hex>", "text": "<light brand colour>", "sans": "<brand font family>", "speakers": ["<colour>", "<colour>"]}` next to `"subtitle"`. Hex here, not ASS. Copy the brand font file into `brand/fonts/`. `"subtitle"` stays as the plain fallback.
+
 **Fonts fail silently.** libass resolves `FontName` through the system: after choosing a font, run `fc-match "<FontName>"`. If it returns a different family, install the TTF (copy to `~/Library/Fonts/` on macOS) and re-check. Note the outcome in brand.md.
 
 ## Phase 6 — Prove it
