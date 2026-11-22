@@ -102,7 +102,7 @@ class Companion:
             if not (self.p.wave_path(n).exists() and self.p.thumbs_meta_path(n).exists()):
                 self.p._build_assets(n)
         d = {"media": {n: self.p.probe(n) for n in names}, "assets": {n: self.p.assets(n) for n in names},
-             "capstyle": self.p.caption_style(), "bin": self.p.assets_bin(), "grades": self.grades(),
+             "capstyle": self.p.caption_style(), "caption_looks": self.p.caption_looks(), "bin": self.p.assets_bin(), "grades": self.grades(),
              "brand": str(self.p.client_root / "brand.md") if self.p.client_root else None,
              "notes:context": self.p.read_notes("context"), "notes:prefs": self.p.read_notes("prefs"),
              "renders": {k: (int((self.p.edit_dir / f).stat().st_mtime) if (self.p.edit_dir / f).exists() else 0)
@@ -338,8 +338,10 @@ class Companion:
                 return "a graphic has a bad position or size"
         c = edl.get("captions")
         if c is not None and dumps(c) != dumps(local.get("captions")):
-            if not isinstance(c, dict) or set(c) - {"pos", "scale", "cues"}:
+            if not isinstance(c, dict) or set(c) - {"pos", "scale", "cues", "look"}:
                 return "captions has a field that is not allowed"
+            if c.get("look") is not None and not (isinstance(c["look"], str) and re.fullmatch(r"[a-z]{2,20}", c["look"])):
+                return "captions.look must be a look name"
             if (c.get("pos") is not None and not pos(c["pos"])) or (c.get("scale") is not None and not num(c["scale"], 0.1, 10)):
                 return "captions has a bad position or size"
             if not isinstance(c.get("cues", []), list):

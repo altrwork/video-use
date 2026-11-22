@@ -128,7 +128,8 @@ export class Workspace extends DurableObject {
     const c = edl.captions;
     if (c != null && !same(prev.captions, c)) {
       if (typeof c !== 'object' || Array.isArray(c)) throw new Error('captions must be an object');
-      keys(c, ['pos', 'scale', 'cues'], 'captions');
+      keys(c, ['pos', 'scale', 'cues', 'look'], 'captions');
+      if (c.look != null && !(typeof c.look === 'string' && /^[a-z]{2,20}$/.test(c.look))) throw new Error('captions.look must be a look name (editorial, cards, newsroom, cinema, accent, pop) or "none"');
       if (c.pos != null && !pos(c.pos)) throw new Error('captions.pos must be [x, y] as fractions of the frame');
       if (c.scale != null && !num(c.scale, 0.1, 10)) throw new Error('captions.scale must be a number between 0.1 and 10');
       (c.cues || []).forEach((q, i) => {
@@ -193,7 +194,7 @@ export class Workspace extends DurableObject {
     return {
       edl, mtime: p.rev, name: p.name, edit_dir: 'cloud', transcripts: tr, media: this.doc(id, 'media', {}), assets: this.doc(id, 'assets', {}),
       chat: [], claude_busy: false, render_busy: false, video_use: null, apps: [], brand: this.doc(id, 'brand', null), bin: this.doc(id, 'bin', []),
-      notes: { context: this.doc(id, 'notes:context', ''), prefs: this.doc(id, 'notes:prefs', '') }, capstyle: this.doc(id, 'capstyle', {}),
+      notes: { context: this.doc(id, 'notes:context', ''), prefs: this.doc(id, 'notes:prefs', '') }, capstyle: this.doc(id, 'capstyle', {}), caption_looks: this.doc(id, 'caption_looks', {}),
       renders: this.doc(id, 'renders', {}), cloud: { online: this.online(p), feed: this.rows('SELECT ts, text FROM feed WHERE project=? ORDER BY seq DESC LIMIT 30', id).reverse() },
     };
   }

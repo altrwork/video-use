@@ -361,7 +361,13 @@ Match the source unless the user asked for something specific. Common targets: `
 }
 ```
 
-`grade` is a preset name or raw ffmpeg filter; its look filters only apply when `grade_request` (the user's words) is set. `overlays` are rendered animation clips. `subtitles` is optional and applied LAST.
+`grade` is a preset name or raw ffmpeg filter; its look filters only apply when `grade_request` (the user's words) is set.
+
+**Caption looks (optional).** Styled, animated captions burned in by libass: `editorial` (lowercase sans, key word huge in a black italic serif), `cards` (serif on a dark card), `newsroom` (heavy sans, the spoken word changes colour), `cinema` (tiny tracked serif caps), `pop` (short-form: heavy caps, 1–3 words, the spoken word jumps and turns the accent colour) and `accent` (one short line, key word in serif italic). Adapted from the MIT-licensed Subtle styles; fonts in `fonts/` (OFL). Set the brand default in style.json:
+```json
+{"caption_look": {"name": "pop", "accent": "#FF5A1F", "text": "#F2EEE2", "sans": "Archivo", "speakers": ["#F2EEE2", "#FFC7A8"]}}
+```
+`accent`/`text` recolour the look, `sans` swaps in the brand font (put the font file in `<client>/brand/fonts/`), `speakers` colours each speaker's words (Scribe `speaker_id`, in order of first appearance; pages never mix speakers). Per edit, `captions.look` (a name, or `"none"` for the plain style.json caption) wins. In a caption's text, `*word*` marks the key word; otherwise each look picks one (a number, else the longest non-filler word). For podcast clips use `pop` or `newsroom`. Captions still need `--build-subtitles` (or hand-edited cues); the look only changes how they are drawn. `overlays` are rendered animation clips. `subtitles` is optional and applied LAST.
 
 **Edited captions (optional `captions`).** Without it, `--build-subtitles` auto-chunks the transcript. With it, those cues are used instead (the Studio writes this when the user edits a caption; you can too):
 

@@ -133,6 +133,52 @@ class Project:
                 out[k.strip()] = v.strip()
         return out
 
+    def caption_looks(self) -> dict:
+        """Every caption look, recoloured for this brand, plus the brand's default, for the live preview."""
+        vu = self.video_use_dir
+        if not vu or not (vu / "helpers" / "caption_looks.py").exists():
+            return {"looks": {}, "default": None, "fonts": {}}
+        try:
+            if str(vu / "helpers") not in sys.path:
+                sys.path.insert(0, str(vu / "helpers"))
+            import caption_looks as cl  # type: ignore
+            import render as vu_render  # type: ignore
+            import contextlib, io
+            with contextlib.redirect_stdout(io.StringIO()):
+                brand = vu_render.load_caption_look({}, self.edit_dir)
+            spec = {}
+            for f in (self.edit_dir / "style.json", self.videos_dir / "style.json", self.videos_dir.parent / "style.json"):
+                try:
+                    d = json.loads(f.read_text()) if f.exists() else {}
+                except Exception:
+                    d = {}
+                if d.get("caption_look"):
+                    spec = d["caption_look"] if isinstance(d["caption_look"], dict) else {"name": d["caption_look"]}
+                    break
+            looks = {n: cl.resolve_look({**spec, "name": n}) for n in cl.LOOKS}
+            fonts = {fam: f"/fonts/{fn}" for fam, fn in cl.FONT_FILES.items()}
+            for d in (self.videos_dir / "brand" / "fonts", self.videos_dir.parent / "brand" / "fonts"):
+                if d.is_dir():
+                    for f in d.iterdir():
+                        if f.suffix.lower() in (".ttf", ".otf"):
+                            fonts.setdefault(re.split(r"[-_ .]", f.stem)[0], f"/fonts/{f.name}")
+            return {"looks": looks, "default": brand["name"] if brand else None, "fonts": fonts}
+        except Exception as e:
+            print(f"[studio] caption looks: {e}", file=sys.stderr)
+            return {"looks": {}, "default": None, "fonts": {}}
+
+    def font_file(self, name: str) -> Path | None:
+        """A caption font for the preview: the repo's fonts/ or the client's brand/fonts, .ttf/.otf only."""
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+\.(ttf|otf)", name):
+            return None
+        dirs = [self.videos_dir / "brand" / "fonts", self.videos_dir.parent / "brand" / "fonts"]
+        if self.video_use_dir:
+            dirs.insert(0, self.video_use_dir / "fonts")
+        for d in dirs:
+            if (d / name).is_file():
+                return d / name
+        return None
+
     def media_dims(self, path: Path) -> tuple[int, int, float]:
         try:
             d = json.loads(subprocess.run(
@@ -891,6 +937,7 @@ def make_handler(project: Project, claude: ClaudeRunner, render: RenderRunner, p
                 "bin": project.assets_bin(),
                 "notes": {"context": project.read_notes("context"), "prefs": project.read_notes("prefs")},
                 "capstyle": project.caption_style(),
+                "caption_looks": project.caption_looks(),
                 "renders": {k: (int((project.edit_dir / f).stat().st_mtime) if (project.edit_dir / f).exists() else 0)
                             for k, f in (("draft", "draft.mp4"), ("preview", "preview.mp4"), ("final", "final.mp4"), ("source", "source.mp4"))},
             }
@@ -935,6 +982,11 @@ def make_handler(project: Project, claude: ClaudeRunner, render: RenderRunner, p
                 return self.send_json({"w": w, "h": h, "duration": d})
             if path == "/api/notes":
                 return self.send_json({"context": project.read_notes("context"), "prefs": project.read_notes("prefs")})
+            if path.startswith("/fonts/"):
+                f = project.font_file(unquote(path[7:]))
+                if not f:
+                    return self.send_error(HTTPStatus.NOT_FOUND)
+                return self.send_file(f, cache=True)
             if path == "/api/bin":
                 return self.send_json(project.assets_bin())
             if path == "/api/project":

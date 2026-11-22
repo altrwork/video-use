@@ -29,6 +29,9 @@ import sys
 from fractions import Fraction
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from caption_looks import page_words, resolve_look, text_to_words, write_look_ass  # noqa: E402
+
 try:
     from grade import get_preset, auto_grade_for_clip  # same directory
 except Exception:
@@ -108,6 +111,45 @@ def load_subtitle_style(edit_dir: Path) -> str:
             print(f"  style: {path} ({', '.join(fields.keys())} overridden)")
             return ",".join(f"{k}={v}" for k, v in merged.items())
     return DEFAULT_SUB_FORCE_STYLE
+
+def load_caption_look(edl: dict, edit_dir: Path) -> dict | None:
+    """The caption look for this render: edl.captions.look (a name) wins over the brand's
+    style.json "caption_look" (name plus colour/font overrides), most specific style.json first."""
+    brand = None
+    for path in (edit_dir / "style.json", edit_dir.parent / "style.json", edit_dir.parent.parent / "style.json"):
+        try:
+            data = json.loads(path.read_text()) if path.exists() else {}
+        except (json.JSONDecodeError, OSError):
+            continue
+        if data.get("caption_look"):
+            brand = data["caption_look"]
+            break
+    override = (edl.get("captions") or {}).get("look")
+    if override == "none":
+        return None
+    if override:
+        spec = dict(brand) if isinstance(brand, dict) else {}
+        spec["name"] = override
+        return resolve_look(spec)
+    return resolve_look(brand)
+
+
+def fonts_dir(edit_dir: Path) -> Path:
+    """One folder libass can read: the repo's caption fonts plus the client's brand/fonts."""
+    out = edit_dir / "_fonts"
+    out.mkdir(exist_ok=True)
+    for src_dir in (Path(__file__).resolve().parent.parent / "fonts", edit_dir.parent.parent / "brand" / "fonts",
+                    edit_dir.parent / "brand" / "fonts"):
+        if not src_dir.is_dir():
+            continue
+        for f in src_dir.iterdir():
+            if f.suffix.lower() in (".ttf", ".otf") and not (out / f.name).exists():
+                try:
+                    (out / f.name).symlink_to(f.resolve())
+                except OSError:
+                    pass
+    return out
+
 
 # -------- Helpers ------------------------------------------------------------
 
@@ -704,6 +746,56 @@ def caption_entries_from_cues(edl: dict, edit_dir: Path) -> list[tuple[float, fl
     return entries
 
 
+def look_pages(edl: dict, edit_dir: Path, look: dict) -> list[dict]:
+    """Output-time pages for a caption look: hand-edited cues as they are, otherwise
+    transcript words paged by the look's rules (never across a cut)."""
+    caps = edl.get("captions") or {}
+    cues = [c for c in caps.get("cues") or [] if isinstance(c, dict)]
+    transcripts: dict[str, dict] = {}
+
+    def words_for(src: str) -> dict:
+        if src not in transcripts:
+            tp = edit_dir / "transcripts" / f"{src}.json"
+            transcripts[src] = json.loads(tp.read_text()) if tp.exists() else {}
+        return transcripts[src]
+
+    pages: list[dict] = []
+    offset = 0.0
+    for r in edl["ranges"]:
+        rs, re_ = float(r["start"]), float(r["end"])
+        if not r.get("mute"):
+            to_out = lambda t: max(rs, min(re_, t)) - rs + offset  # noqa: E731
+            if cues:
+                for c in cues:
+                    if c.get("source") != r["source"]:
+                        continue
+                    a, b = max(rs, float(c["start"])), min(re_, float(c["end"]))
+                    if b - a < 0.05:
+                        continue
+                    if c.get("text") is not None:
+                        words = text_to_words(str(c["text"]), to_out(a), to_out(b))
+                    else:
+                        words = [((w.get("text") or "").strip(), to_out(w["start"]), to_out(w["end"]), w.get("speaker_id"))
+                                 for w in _words_in_range(words_for(r["source"]), a, b)]
+                    if words:
+                        pages.append({"a": to_out(a), "b": to_out(b), "words": words,
+                                      "pos": c.get("pos") or caps.get("pos"), "scale": c.get("scale") or caps.get("scale")})
+            else:
+                words = [((w.get("text") or "").strip(), to_out(w["start"]), to_out(w["end"]), w.get("speaker_id"))
+                         for w in _words_in_range(words_for(r["source"]), rs, re_)]
+                words = [w for w in words if w[0]]
+                for pg in page_words(words, look):
+                    b = pg[-1][2]
+                    pages.append({"a": pg[0][1], "b": b, "words": pg, "pos": caps.get("pos"), "scale": caps.get("scale")})
+        offset += re_ - rs
+    pages.sort(key=lambda p: p["a"])
+    # hold each page until the next one starts (short gaps only), so captions don't blink
+    for p, n in zip(pages, pages[1:]):
+        if 0 < n["a"] - p["b"] < 0.5:
+            p["b"] = n["a"]
+    return pages
+
+
 def _ass_timestamp(seconds: float) -> str:
     cs = max(0, int(round(seconds * 100)))
     return f"{cs // 360000}:{cs // 6000 % 60:02d}:{cs // 100 % 60:02d}.{cs % 100:02d}"
@@ -726,7 +818,8 @@ def write_ass(entries: list[tuple[float, float, str]], out_path: Path) -> None:
     out_path.write_text(head + "\n".join(lines) + "\n")
 
 
-def build_master_srt(edl: dict, edit_dir: Path, out_path: Path, max_words: int = CHUNK_WORDS) -> Path:
+def build_master_srt(edl: dict, edit_dir: Path, out_path: Path, max_words: int = CHUNK_WORDS,
+                     look: dict | None = None, dims: tuple[int, int] | None = None) -> Path:
     """Build an output-timeline SRT from per-source transcripts.
 
     If edl["captions"]["cues"] exists (hand-edited captions, e.g. from the
@@ -738,6 +831,18 @@ def build_master_srt(edl: dict, edit_dir: Path, out_path: Path, max_words: int =
     - Output times computed as word.start - segment_start + segment_offset
     """
     transcripts_dir = edit_dir / "transcripts"
+
+    if look:
+        pages = look_pages(edl, edit_dir, look)
+        lines = []
+        for i, p in enumerate(pages, start=1):
+            text = " ".join(w[0].replace("*", "") for w in p["words"])
+            lines += [str(i), f"{_srt_timestamp(p['a'])} --> {_srt_timestamp(p['b'])}", text, ""]
+        out_path.write_text("\n".join(lines))
+        W, H = dims or (1080, 1920)
+        ass_path = write_look_ass(pages, look, W, H, out_path.with_suffix(".look.ass"))
+        print(f"captions → {ass_path.name} ({len(pages)} pages, look: {look['name']}); plain {out_path.name} alongside")
+        return ass_path
 
     entries: list[tuple[float, float, str]] = []
     seg_offset = 0.0
@@ -983,8 +1088,10 @@ def build_final_composite(
     # Subtitles LAST — Rule 1
     if has_subs:
         subs_abs = str(subtitles_path.resolve()).replace(":", r"\:").replace("'", r"\'")
+        fdir = str(fonts_dir(edit_dir)).replace(":", r"\:").replace("'", r"\'")
+        style_opt = "" if subtitles_path.name.endswith(".look.ass") else f":force_style='{force_style}'"
         filter_parts.append(
-            f"{current}subtitles='{subs_abs}':force_style='{force_style}'[outv]"
+            f"{current}subtitles='{subs_abs}':fontsdir='{fdir}'{style_opt}[outv]"
         )
         out_label = "[outv]"
     else:
@@ -1101,7 +1208,9 @@ def main() -> None:
     if not args.no_subtitles:
         if args.build_subtitles or (edl.get("captions") or {}).get("cues"):
             subs_path = edit_dir / "master.srt"
-            subs_path = build_master_srt(edl, edit_dir, subs_path, max_words=args.max_caption_words)
+            look = load_caption_look(edl, edit_dir)
+            subs_path = build_master_srt(edl, edit_dir, subs_path, max_words=args.max_caption_words,
+                                         look=look, dims=probe_dims(base_path) if look else None)
         elif edl.get("subtitles"):
             subs_path = resolve_subtitles_path(edl["subtitles"], edit_dir)
 
